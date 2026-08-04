@@ -1,0 +1,17 @@
+{
+  "name": "@pve/core",
+  "version": "0.0.1",
+  "description": "Deterministic editing engine: EDL, Op DSL, segmentation, digest, validation, undo. No native deps.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  }
+}

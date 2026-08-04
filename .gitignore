@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+.cache/
+# Local model + media artifacts must never be committed
+*.mp4
+*.mov
+*.mkv
+*.wav
+models/
+.pve-cache/
+# Secrets never touch the repo (keys live in the OS keychain)
+.env
+.env.local

@@ -1,0 +1,39 @@
+import type { ReadTools } from '../tools/read.js';
+import type { Digest, Edl, Patch } from '../types.js';
+
+/** One prior instruction and the interpretation we derived from it. */
+export interface HistoryEntry {
+  instruction: string;
+  interpretation: string;
+}
+
+/**
+ * Everything a backend needs to turn one instruction into a patch. The
+ * intelligence call receives (digest, current EDL, recent history, new
+ * instruction) and returns a *patch* against the current state — never a
+ * from-scratch reclassification unless the user asks for one.
+ */
+export interface PlanContext {
+  digest: Digest;
+  edl: Edl;
+  history: HistoryEntry[];
+  instruction: string;
+  /** read-only query tools (local, instant) */
+  tools: ReadTools;
+}
+
+/**
+ * A pluggable intelligence backend. Three interchangeable implementations exist:
+ * remote (BYO key), local (Ollama), and the no-LLM heuristic. All return the
+ * same Patch shape, so the rest of the engine is backend-agnostic.
+ */
+export interface Backend {
+  readonly name: string;
+  /** true if this backend sends anything over the network */
+  readonly network: boolean;
+  plan(ctx: PlanContext): Promise<Patch>;
+}
+
+export { HeuristicBackend } from './heuristic.js';
+export { OllamaBackend } from './ollama.js';
+export { RemoteBackend } from './remote.js';

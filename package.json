@@ -1,0 +1,24 @@
+{
+  "name": "prompt-video-editor",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Local-first, prompt-driven video editor. Footage never leaves your machine.",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspace @pve/core",
+    "typecheck": "tsc -b",
+    "demo": "npm run demo --workspace @pve/cli",
+    "repl": "npm run repl --workspace @pve/cli"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
