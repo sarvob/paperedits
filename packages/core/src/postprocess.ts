@@ -28,12 +28,14 @@ function sourceLen(e: SegmentEntry): number {
 export function flipShortIslands(edl: Edl, cfg: PostProcessConfig = DEFAULT_POSTPROCESS): Edl {
   const entries = edl.entries.map((e) => ({ ...e }));
 
-  // Group consecutive segments (cards break runs) into class-runs.
-  type Run = { idxs: number[]; cls: SegmentEntry['class']; len: number; pinned: boolean };
+  // Group consecutive segments (cards break runs) into class-runs. `speed` is
+  // the run's representative speed (first segment) — copied onto any island that
+  // gets flipped INTO this run, so class and speed never diverge.
+  type Run = { idxs: number[]; cls: SegmentEntry['class']; len: number; pinned: boolean; speed: number };
   const runs: Run[] = [];
   entries.forEach((e, i) => {
     if (!isSegment(e)) {
-      runs.push({ idxs: [], cls: 'key', len: 0, pinned: true }); // card = hard break
+      runs.push({ idxs: [], cls: 'key', len: 0, pinned: true, speed: 1 }); // card = hard break
       return;
     }
     const last = runs[runs.length - 1];
@@ -42,7 +44,7 @@ export function flipShortIslands(edl: Edl, cfg: PostProcessConfig = DEFAULT_POST
       last.len += sourceLen(e);
       last.pinned = last.pinned || e.pinned;
     } else {
-      runs.push({ idxs: [i], cls: e.class, len: sourceLen(e), pinned: e.pinned });
+      runs.push({ idxs: [i], cls: e.class, len: sourceLen(e), pinned: e.pinned, speed: e.speed });
     }
   });
 
@@ -52,12 +54,16 @@ export function flipShortIslands(edl: Edl, cfg: PostProcessConfig = DEFAULT_POST
     if (run.pinned) continue;
     const threshold = run.cls === 'key' ? cfg.minKeyIslandSec : cfg.minSkipIslandSec;
     if (run.len >= threshold) continue;
-    // Flip to the class of whichever neighbour exists (prefer previous).
+    // Flip to whichever neighbour exists (prefer previous), adopting BOTH its
+    // class and its speed so the merged-away island truly joins its surroundings.
     const neighbour = realRuns[i - 1] ?? realRuns[i + 1];
     if (!neighbour || neighbour.cls === run.cls) continue;
     for (const idx of run.idxs) {
       const e = entries[idx]!;
-      if (isSegment(e)) e.class = neighbour.cls;
+      if (isSegment(e)) {
+        e.class = neighbour.cls;
+        e.speed = neighbour.speed;
+      }
     }
   }
   return { ...edl, entries };
