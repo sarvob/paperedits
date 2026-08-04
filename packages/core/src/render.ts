@@ -9,6 +9,14 @@ export interface RenderOptions {
   quality: 'match' | 'high' | 'draft';
   /** hardware encoder; chosen by platform at call time */
   encoder: 'videotoolbox' | 'nvenc' | 'qsv' | 'x264';
+  /** font for burned labels (drawtext needs an explicit file on macOS) */
+  fontFile?: string;
+  /**
+   * Burn segment labels into the video with drawtext. Requires an ffmpeg built
+   * with libfreetype. Set false to skip burning (labels still exist in the EDL
+   * and chapter export) when the filter is unavailable.
+   */
+  burnLabels?: boolean;
 }
 
 export const DEFAULT_RENDER: Omit<RenderOptions, 'input' | 'output'> = {
@@ -88,27 +96,37 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
     const a = `a${i}`;
     // Video: trim to source range, reset PTS, scale time by 1/speed.
     let vChain = `[0:v]trim=start=${s.sourceStart.toFixed(3)}:duration=${dur},setpts=(PTS-STARTPTS)/${s.speed}`;
-    if (s.label) {
-      const safe = s.label.replace(/:/g, '\\:').replace(/'/g, "\\'");
-      vChain += `,drawtext=text='${safe}':x=(w-tw)/2:y=h-th-40:fontsize=42:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=12`;
+    if (s.label && opts.burnLabels !== false) {
+      // Inside a single-quoted drawtext value, colons are literal; the only char
+      // that breaks the parser is the ASCII apostrophe (it closes the quote).
+      // Swap it for the typographic ’ and strip backslashes. `expansion=none`
+      // stops drawtext from interpreting %{...} sequences in the label.
+      const safe = s.label.replace(/'/g, '’').replace(/\\/g, '');
+      const font = opts.fontFile ? `fontfile='${opts.fontFile}':` : '';
+      vChain += `,drawtext=${font}text='${safe}':expansion=none:x=(w-tw)/2:y=h-th-40:fontsize=42:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=12`;
     }
     filters.push(`${vChain}[${v}]`);
     vLabels.push(`[${v}]`);
 
-    // Audio: mute very-fast or muted sections, else atempo-match to the speed.
-    if (s.speed > 3 || s.audio === 'mute') {
-      filters.push(`[0:a]atrim=start=${s.sourceStart.toFixed(3)}:duration=${dur},asetpts=PTS-STARTPTS,volume=0[${a}]`);
-    } else {
-      filters.push(
-        `[0:a]atrim=start=${s.sourceStart.toFixed(3)}:duration=${dur},asetpts=PTS-STARTPTS,${atempoChain(s.speed)}[${a}]`,
-      );
-    }
+    // Audio: ALWAYS atempo to the segment speed so its duration matches the
+    // time-compressed video (otherwise concat pads to the longer stream). Very
+    // fast or explicitly-muted sections additionally get volume=0 — silenced,
+    // but still compressed to the right length.
+    const muted = s.speed > 3 || s.audio === 'mute';
+    filters.push(
+      `[0:a]atrim=start=${s.sourceStart.toFixed(3)}:duration=${dur},asetpts=PTS-STARTPTS,${atempoChain(s.speed)}${muted ? ',volume=0' : ''}[${a}]`,
+    );
     aLabels.push(`[${a}]`);
   });
 
   const n = segs.length;
-  const concat = `${vLabels.join('')}${aLabels.join('')}concat=n=${n}:v=1:a=1[outv][outa]`;
-  const filterComplex = [...filters, concat].join(';');
+  // concat requires streams INTERLEAVED per segment: [v0][a0][v1][a1]… — not all
+  // videos then all audios. Then normalize loudness INSIDE the graph, since a
+  // simple `-af loudnorm` cannot attach to a complex-filtergraph output.
+  const interleaved = vLabels.map((v, i) => `${v}${aLabels[i]}`).join('');
+  const concat = `${interleaved}concat=n=${n}:v=1:a=1[outv][araw]`;
+  const loudnorm = `[araw]loudnorm[outa]`;
+  const filterComplex = [...filters, concat, loudnorm].join(';');
 
   const qualityFlags =
     opts.quality === 'match'
@@ -129,8 +147,6 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
     '[outa]',
     ...encoderFlags[opts.encoder],
     ...qualityFlags,
-    '-af',
-    'loudnorm',
     opts.output,
   ];
 

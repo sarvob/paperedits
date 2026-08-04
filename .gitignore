@@ -8,7 +8,9 @@ dist/
 *.mov
 *.mkv
 *.wav
+*.aiff
 models/
+samples/
 .pve-cache/
 # Secrets never touch the repo (keys live in the OS keychain)
 .env

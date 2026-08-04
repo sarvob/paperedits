@@ -14,6 +14,7 @@
     "start": "tsx src/repl.ts"
   },
   "dependencies": {
-    "@pve/core": "*"
+    "@pve/core": "*",
+    "@pve/import": "*"
   }
 }

@@ -25,8 +25,11 @@ import {
   type Analysis,
   type Edl,
 } from '@pve/core';
+import { FfmpegImporter, renderToFile } from '@pve/import';
 import { sampleAnalysis } from './sample.js';
 import { requireSystem } from './system-checks.js';
+
+const VIDEO_EXT = /\.(mp4|mov|mkv|webm|m4v|avi)$/i;
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
@@ -49,13 +52,24 @@ function printEdl(edl: Edl): void {
   }
 }
 
-function loadAnalysis(): Analysis {
+async function loadAnalysis(): Promise<Analysis> {
   const arg = process.argv[2];
-  if (arg && !arg.startsWith(':')) {
+  if (arg && VIDEO_EXT.test(arg)) {
+    console.log(`\nImporting ${arg} …`);
+    const importer = new FfmpegImporter();
+    const t0 = Date.now();
+    const analysis = await importer.analyze(arg, {
+      onProgress: (stage, pct) => process.stdout.write(`  ${stage} ${pct}%\r`),
+    });
+    console.log(`\n  imported in ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
+      `(${analysis.words.length} words, ${analysis.sceneCuts.length} scene cuts)`);
+    return analysis;
+  }
+  if (arg && arg.endsWith('.json')) {
     console.log(`(loading analysis from ${arg})`);
     return JSON.parse(readFileSync(arg, 'utf8')) as Analysis;
   }
-  console.log('(using built-in sample "build log" — pass an Analysis JSON path to use your own)');
+  console.log('(using built-in sample "build log" — pass a video file or Analysis JSON to use your own)');
   return sampleAnalysis();
 }
 
@@ -64,8 +78,10 @@ async function main() {
   // dev against the synthetic sample may opt into degraded mode explicitly.
   await requireSystem({ allowDegraded: process.env.PVE_DEV_SYNTHETIC === '1' });
 
-  const session = new Session(loadAnalysis());
+  const session = new Session(await loadAnalysis());
   const backend = new HeuristicBackend();
+  const sourceArg = process.argv[2];
+  const sourcePath = sourceArg && VIDEO_EXT.test(sourceArg) ? sourceArg : null;
 
   console.log(`\nImported: ${session.digest.entries.length} segments, ${Math.round(session.analysis.durationSec)}s`);
   console.log('Type an instruction, or :help for commands. Ctrl-C to quit.\n');
@@ -90,7 +106,7 @@ async function main() {
           continue;
         case 'help':
           console.log('  instructions: e.g. "key parts 1x, rest 10x, label the fast parts"');
-          console.log('  :edl :digest :render :history :undo :redo :quit');
+          console.log('  :edl :digest :render :export [file] :history :undo :redo :quit');
           break;
         case 'edl':
           printEdl(session.edl);
@@ -115,6 +131,27 @@ async function main() {
         case 'history':
           console.log('   ' + session.timeline().join('  →  '));
           break;
+        case 'export': {
+          if (!sourcePath) {
+            console.log('   :export needs a real source video (launch with a video path)');
+            break;
+          }
+          const out = line.split(/\s+/)[1] ?? sourcePath.replace(VIDEO_EXT, '.edit.mp4');
+          console.log(`   rendering → ${out} …`);
+          try {
+            const r = await renderToFile(session.edl, {
+              input: sourcePath,
+              output: out,
+              quality: 'match',
+              encoder: 'videotoolbox',
+              onWarn: (w) => console.log(`   ⚠️  ${w}`),
+            });
+            console.log(`   ✓ ${r.output} — ${(r.bytes / 1e6).toFixed(1)} MB in ${r.seconds.toFixed(1)}s`);
+          } catch (e) {
+            console.log(`   ✗ render failed: ${(e as Error).message.split('\n')[0]}`);
+          }
+          break;
+        }
         case 'undo': {
           const u = session.undo();
           console.log(u ? `   undid: "${u}"` : '   nothing to undo');

@@ -61,11 +61,13 @@ export function buildAtoms(analysis: Analysis, cfg: SegmentConfig = DEFAULT_SEGM
   }
 
   // Merge atoms shorter than minAtomSec into the following atom so no cut point
-  // is uselessly small. The final atom, if short, merges backward.
+  // is uselessly small — but NEVER dissolve a scene-cut boundary (prev.reason
+  // 'scene' means prev.end is a hard visual cut). Merging across it would hide
+  // the scene change from candidate segmentation.
   const merged: Atom[] = [];
   for (const atom of raw) {
     const prev = merged[merged.length - 1];
-    if (prev && prev.end - prev.start < cfg.minAtomSec) {
+    if (prev && prev.reason !== 'scene' && prev.end - prev.start < cfg.minAtomSec) {
       merged[merged.length - 1] = {
         id: boundaryId('atom', prev.start, atom.end),
         start: prev.start,

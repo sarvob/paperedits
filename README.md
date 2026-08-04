@@ -76,6 +76,43 @@ classify+retime+label, "actually 6×", "keep the drill at 1×", and inserting a
 title card — showing the EDL after each, an undo, and the generated ffmpeg render
 plan.
 
+## Edit a REAL video (M1 pipeline)
+
+Once the system check is green (`npm run doctor`), you can import an actual
+recording, edit it by prompt, and render an output file:
+
+```bash
+bash scripts/make-sample.sh                          # optional: a reproducible test clip
+npx tsx packages/cli/src/repl.ts samples/buildlog.mp4
+```
+
+Then type instructions and `:export`:
+
+```
+▸ key parts 1x, rest 8x, label the fast parts
+▸ :export                     # renders samples/buildlog.edit.mp4 (single ffmpeg encode)
+▸ :quit
+```
+
+The import pass (`@pve/import`) runs a container scan (ffprobe → activity curve +
+scene cuts, no decode) and local whisper.cpp transcription, caches the result by
+file hash (re-import is instant), and hands the engine a real `Analysis`. Object
+detection / VLM captions (the sparse visual pass) are P1 — the engine runs fine
+without them, you just don't get object-based rules yet.
+
+**One-time setup** (macOS):
+
+```bash
+brew install ffmpeg whisper-cpp
+mkdir -p models && curl -L -o models/ggml-base.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+```
+
+> Label burn needs an ffmpeg built with libfreetype (`drawtext`). If yours lacks
+> it, `doctor` flags it and export degrades gracefully — it renders the
+> speed-ramped cut without burned labels; labels still appear in the EDL and
+> chapter export.
+
 ## Repository layout
 
 ```
@@ -92,10 +129,17 @@ packages/
       history.ts      one undo/redo stack across prompts AND manual edits
       session.ts      the interactive loop: plan → validate → apply → commit
       render.ts       single-encode ffmpeg plan + chapter/description export
-      import.ts       interface where whisper/ffmpeg plug in (native pkg, later)
+      preflight.ts    mandatory system-check definitions + evaluation
+      import.ts       interface where whisper/ffmpeg plug in
       intelligence/   Backend interface + heuristic / remote / ollama
       tools/read.ts   read-only query tools the agent uses (lazy digest)
-  cli/       @pve/cli — the demo/driver
+  import/    @pve/import — M1 native pass: ffprobe scan + whisper.cpp + ffmpeg render
+    src/
+      scan.ts         ffprobe container scan → activity curve + scene cuts
+      transcribe.ts   16 kHz extract → whisper.cpp → word-level transcript
+      render-exec.ts  run the single ffmpeg encode (drawtext-aware degradation)
+      index.ts        FfmpegImporter + file-hash Analysis cache
+  cli/       @pve/cli — demo, interactive REPL, and the `doctor` system check
 ```
 
 ## Guarantees the engine enforces

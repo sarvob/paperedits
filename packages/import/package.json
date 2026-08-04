@@ -1,0 +1,18 @@
+{
+  "name": "@pve/import",
+  "version": "0.0.1",
+  "description": "M1 import pass: ffmpeg/ffprobe container scan + whisper.cpp transcription → Analysis.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@pve/core": "*"
+  }
+}

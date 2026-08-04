@@ -5,7 +5,6 @@
  * reuses the same requirement definitions and evaluation.
  */
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import {
   evaluatePreflight,
@@ -13,6 +12,7 @@ import {
   type PreflightReport,
   type ProbeResult,
 } from '@pve/core';
+import { findModel, hasDrawtext } from '@pve/import';
 
 const run = promisify(execFile);
 
@@ -36,7 +36,6 @@ async function checkNode(): Promise<ProbeResult> {
 async function checkWhisper(): Promise<ProbeResult> {
   // Accept an explicit binary path, or the common whisper.cpp entry points.
   const bin = process.env.PVE_WHISPER_BIN;
-  const model = process.env.PVE_WHISPER_MODEL;
   const candidates = bin ? [bin] : ['whisper-cli', 'whisper-cpp', 'whisper', 'main'];
 
   let foundBin = '';
@@ -48,7 +47,10 @@ async function checkWhisper(): Promise<ProbeResult> {
     }
   }
   if (!foundBin) return { ok: false, detail: 'whisper binary not found (set PVE_WHISPER_BIN)' };
-  if (!model || !existsSync(model)) {
+
+  // Reuse the importer's resolver (env → models/ dir up the tree).
+  const model = findModel();
+  if (!model) {
     return { ok: false, detail: `binary ok (${foundBin}) but no model (set PVE_WHISPER_MODEL)` };
   }
   return { ok: true, detail: `${foundBin} + model ${model.split('/').pop()}` };
@@ -66,16 +68,24 @@ async function checkEncoder(): Promise<ProbeResult> {
   }
 }
 
+async function checkLabelBurn(): Promise<ProbeResult> {
+  const ok = await hasDrawtext().catch(() => false);
+  return ok
+    ? { ok: true, detail: 'drawtext available' }
+    : { ok: false, detail: 'ffmpeg built without libfreetype; labels not burned' };
+}
+
 /** Probe the machine and produce the pass/fail report. */
 export async function runSystemChecks(): Promise<PreflightReport> {
-  const [node, ffmpeg, ffprobe, whisper, encoder] = await Promise.all([
+  const [node, ffmpeg, ffprobe, whisper, encoder, labelburn] = await Promise.all([
     checkNode(),
     tryVersion('ffmpeg'),
     tryVersion('ffprobe'),
     checkWhisper(),
     checkEncoder(),
+    checkLabelBurn(),
   ]);
-  return evaluatePreflight({ node, ffmpeg, ffprobe, whisper, encoder });
+  return evaluatePreflight({ node, ffmpeg, ffprobe, whisper, encoder, labelburn });
 }
 
 const thisPlatform = (): 'darwin' | 'linux' | 'win32' =>
