@@ -7,6 +7,7 @@
  */
 import { HeuristicBackend, Session, digestToPrompt, estimateTokens, planRender, type Edl } from '@pve/core';
 import { sampleAnalysis } from './sample.js';
+import { requireSystem } from './system-checks.js';
 
 function printEdl(edl: Edl): void {
   for (const e of edl.entries) {
@@ -25,6 +26,10 @@ function printEdl(edl: Edl): void {
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
 async function main() {
+  // The demo runs on a synthetic clip, so it opts into degraded mode — but the
+  // system check still runs and reports, exactly as the real app gate does.
+  await requireSystem({ allowDegraded: true });
+
   const session = new Session(sampleAnalysis());
   const backend = new HeuristicBackend();
 

@@ -8,6 +8,7 @@
     "pve-demo": "./src/demo.ts"
   },
   "scripts": {
+    "doctor": "tsx src/doctor.ts",
     "demo": "tsx src/demo.ts",
     "repl": "tsx src/repl.ts",
     "start": "tsx src/repl.ts"

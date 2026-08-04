@@ -12,6 +12,7 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspace @pve/core",
     "typecheck": "tsc -b",
+    "doctor": "npm run doctor --workspace @pve/cli",
     "demo": "npm run demo --workspace @pve/cli",
     "repl": "npm run repl --workspace @pve/cli"
   },

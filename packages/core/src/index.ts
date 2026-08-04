@@ -11,6 +11,7 @@ export * from './history.js';
 export * from './render.js';
 export * from './session.js';
 export * from './import.js';
+export * from './preflight.js';
 export { ReadTools } from './tools/read.js';
 export * from './intelligence/index.js';
 export type { OutboundGate, RemoteConfig } from './intelligence/remote.js';

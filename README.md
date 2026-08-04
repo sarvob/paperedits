@@ -40,6 +40,28 @@ Three interchangeable intelligence backends, selectable in settings:
 - **Ollama** (local endpoint, $0, loopback only)
 - **Heuristic** (no LLM at all — every op still reachable; reduced intelligence, not reduced function)
 
+## System requirements (enforced)
+
+The app runs a **mandatory preflight** and refuses to start if a required native
+dependency is missing — no half-working state, no failing three steps into a
+render. Requirement definitions live in `@pve/core` (`preflight.ts`) so every
+entry point — CLI today, desktop shell later — shares one source of truth.
+
+```bash
+npm run doctor    # report readiness; exit 0 = ready, 1 = something required is missing
+```
+
+| Requirement | Required | For |
+|---|---|---|
+| Node.js ≥ 20 | yes | runtime |
+| ffmpeg / ffprobe | yes | decode, retime, label burn, export encode; container scan |
+| whisper.cpp + model | yes | local word-level transcription |
+| hardware encoder (VideoToolbox/NVENC/QSV) | no | fast export (falls back to libx264) |
+
+The editor (and the REPL) will not launch until `doctor` is green. For
+engine-only development against the synthetic sample, set `PVE_DEV_SYNTHETIC=1`
+to run in an explicit, clearly-labeled degraded mode.
+
 ## Try it now (no media, no keys, no ffmpeg)
 
 ```bash

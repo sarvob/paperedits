@@ -26,6 +26,7 @@ import {
   type Edl,
 } from '@pve/core';
 import { sampleAnalysis } from './sample.js';
+import { requireSystem } from './system-checks.js';
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
@@ -59,6 +60,10 @@ function loadAnalysis(): Analysis {
 }
 
 async function main() {
+  // Mandatory system check — the editor does not start until it passes. Engine
+  // dev against the synthetic sample may opt into degraded mode explicitly.
+  await requireSystem({ allowDegraded: process.env.PVE_DEV_SYNTHETIC === '1' });
+
   const session = new Session(loadAnalysis());
   const backend = new HeuristicBackend();
 
