@@ -1,4 +1,4 @@
-import type { DigestEntry, MutatingOp, Patch } from '../types.js';
+import type { Digest, DigestEntry, MutatingOp, Patch, VideoSummary } from '../types.js';
 import type { Backend, PlanContext } from './index.js';
 
 /**
@@ -18,6 +18,23 @@ import type { Backend, PlanContext } from './index.js';
 export class HeuristicBackend implements Backend {
   readonly name = 'heuristic';
   readonly network = false;
+
+  /** Deterministic summary (no model): overview from the transcript, per-moment
+   * labels from speech/objects. Always available — offline, silent video, etc. */
+  async summarize(digest: Digest): Promise<VideoSummary> {
+    const allSpeech = digest.entries.map((e) => e.speech).filter(Boolean).join(' ').trim();
+    const mins = Math.round(digest.durationSec / 60);
+    let summary: string;
+    if (allSpeech) {
+      const words = allSpeech.split(/\s+/);
+      summary = words.slice(0, 28).join(' ') + (words.length > 28 ? '…' : '');
+    } else {
+      const objs = [...new Set(digest.entries.flatMap((e) => e.objects))];
+      summary = `A ${mins ? `${mins}-minute ` : ''}video with no narration${objs.length ? `, showing ${objs.slice(0, 4).join(', ')}` : ''} across ${digest.entries.length} moments.`;
+    }
+    const moments = digest.entries.map((e) => ({ id: e.id, label: momentLabel(e) }));
+    return { summary, moments };
+  }
 
   /** activity at/above this is "key" when the user asks for important parts */
   activityKeyThreshold = 0.55;
@@ -123,6 +140,15 @@ function parseSpeed(text: string): number | null {
   const matches = [...text.matchAll(/(\d+(?:\.\d+)?)\s*x\b/g)];
   if (!matches.length) return null;
   return Number(matches[matches.length - 1]![1]);
+}
+
+/** One-line moment label from speech first, else objects, else activity. */
+function momentLabel(e: DigestEntry): string {
+  if (e.caption) return e.caption;
+  const speech = e.speech.split(/\s+/).filter(Boolean).slice(0, 8).join(' ');
+  if (speech) return speech + (e.speech.split(/\s+/).length > 8 ? '…' : '');
+  if (e.objects.length) return e.objects.slice(0, 3).join(', ');
+  return e.activity >= 0.5 ? 'Active section' : 'Quiet section';
 }
 
 /** Deterministic 3-word-ish label from a digest entry (no LLM). */

@@ -182,6 +182,15 @@ ipcMain.handle('session:setSpeed', async (_e, entryId: string, speed: number) =>
   return snapshot();
 });
 
+ipcMain.handle('session:summarize', async (_e, force: boolean) => {
+  if (!session) return null;
+  try {
+    return await session.summarize(currentBackend, !!force);
+  } catch (err) {
+    return { summary: '', moments: [], error: (err as Error).message };
+  }
+});
+
 ipcMain.handle('overlay:add', async (_e, overlay) => {
   if (!session) return null;
   session.addOverlay(overlay);

@@ -23,6 +23,7 @@ interface PveApi {
   setSpeed(id: string, speed: number): Promise<Snapshot | null>;
   outbound(i: string): Promise<{ network: boolean; text: string }>;
   setBackend(kind: string, config: unknown): Promise<{ ok: boolean; name?: string; network?: boolean; error?: string }>;
+  summarize(force?: boolean): Promise<{ summary: string; moments: { id: string; label: string }[]; error?: string } | null>;
   addOverlay(o: unknown): Promise<Snapshot | null>;
   updateOverlay(id: string, patch: unknown, label: string): Promise<Snapshot | null>;
   removeOverlay(id: string): Promise<Snapshot | null>;
@@ -38,6 +39,7 @@ const EMOJIS = ['🔥', '✨', '✅', '👉', '❤️', '😂', '🎯', '⭐'];
 
 let current: Snapshot | null = null;
 let selectedOverlay: string | null = null;
+let momentLabels = new Map<string, string>(); // candidateId → one-line summary
 
 // ---- output-timeline math (mirrors @pve/core outputSpans) ------------------
 interface SpanItem { id: string; kind: 'segment' | 'card'; outStart: number; outEnd: number; seg?: SegmentEntry }
@@ -320,18 +322,43 @@ function renderEdl(s: Snapshot) {
       wrap.appendChild(row); continue;
     }
     const seg = e as SegmentEntry;
+    // Lead with the AI one-line moment summary (falls back to the label/speech).
+    const moment = momentLabels.get(seg.candidateId) || seg.label || '';
     row.className = `row ${seg.class === 'key' ? 'key' : 'fast'}`;
     row.innerHTML = `
-      <span class="dot"></span><span class="idx">#${seg.index}</span>
+      <span class="dot"></span>
       <span class="time">${fmt(seg.sourceStart)}–${fmt(seg.sourceEnd)}</span>
-      <span class="lbl">${seg.label ? escapeHtml(seg.label) : '<span class="muted">—</span>'}</span>
+      <span class="lbl">${moment ? escapeHtml(moment) : '<span class="muted">…</span>'}</span>
       <select data-id="${seg.id}">${[1, 2, 4, 6, 8, 10, 12, 16].map((v) => `<option value="${v}" ${v === seg.speed ? 'selected' : ''}>${v}×</option>`).join('')}</select>
       <span class="pin">${seg.pinned ? '📌' : ''}</span>`;
+    // Click a moment → seek the preview to it.
+    row.onclick = (ev) => {
+      if ((ev.target as HTMLElement).matches('select')) return;
+      const spans = computeSpans(s.edl).items.find((x) => x.id === seg.id);
+      if (spans) seek(spans.outStart + 0.05);
+    };
     wrap.appendChild(row);
   }
   wrap.querySelectorAll<HTMLSelectElement>('select').forEach((sel) => {
-    sel.onchange = async () => { const snap = await pve.setSpeed(sel.dataset.id!, Number(sel.value)); if (snap) apply(snap); };
+    sel.onchange = async () => { const snap = await pve.setSpeed(sel.dataset.id!, Number(sel.value)); if (snap) apply(snap, { keepPlayhead: true }); };
   });
+}
+
+async function requestSummary(force = false) {
+  $('summary').hidden = false;
+  const textEl = $('summaryText');
+  if (force || !$('summaryText').textContent?.trim() || $('summaryText').classList.contains('loading')) {
+    textEl.className = 'summary-text loading';
+    textEl.textContent = 'Summarizing…';
+  }
+  const active = ($('backendSel') as HTMLSelectElement).value;
+  $('summarySrc').textContent = active === 'heuristic' ? 'from transcript' : `via ${active}`;
+  const res = await pve.summarize(force);
+  if (!res) { $('summary').hidden = true; return; }
+  textEl.className = 'summary-text';
+  textEl.textContent = res.summary || '(no summary)';
+  momentLabels = new Map(res.moments.map((m) => [m.id, m.label]));
+  if (current) renderEdl(current);
 }
 function renderHistory(s: Snapshot) {
   $('history').innerHTML = s.timeline.map((t, i) => `<li class="${i === s.timeline.length - 1 ? 'current' : ''}">${escapeHtml(t)}</li>`).join('');
@@ -395,12 +422,15 @@ async function importPath(path: string) {
     $('importErrorMsg').textContent = res.error || 'unknown error';
     return;
   }
+  momentLabels = new Map();
   apply(res as Snapshot);
   const v = video();
   if ((res as Snapshot).mediaUrl) { v.setAttribute('src', (res as Snapshot).mediaUrl!); v.load(); }
   startPaintLoop();
   $('outbound').textContent = (res as Snapshot).digestText || '';
   toast(`Imported ${path.split('/').pop()}`);
+  // Generate the summary + per-moment labels (whisper transcript → LLM/heuristic).
+  requestSummary();
 }
 async function applyInstruction() {
   const input = $('cmd') as HTMLInputElement;
@@ -491,6 +521,7 @@ $('importErrorDismiss').onclick = () => {
   if (!current) $('emptyState').hidden = false;
 };
 $('playBtn').onclick = playPause;
+$('summaryRefresh').onclick = () => requestSummary(true);
 $('scrub').addEventListener('input', (e) => { stop(); seek((Number((e.target as HTMLInputElement).value) / 1000) * totalDur()); });
 $('addText').onclick = addTextOverlay;
 $('stage').addEventListener('mousedown', (e) => { const id = (e.target as HTMLElement).id; if (id === 'previewCanvas' || id === 'overlayLayer') selectOverlay(null); });

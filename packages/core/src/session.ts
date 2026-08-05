@@ -2,12 +2,13 @@ import { applyOps } from './apply.js';
 import { buildDigest } from './digest.js';
 import { initialEdl } from './edl.js';
 import { History } from './history.js';
+import { HeuristicBackend } from './intelligence/heuristic.js';
 import type { Backend, HistoryEntry } from './intelligence/index.js';
 import { normalize, type PostProcessConfig } from './postprocess.js';
 import { segment, type SegmentConfig } from './segment.js';
 import { ReadTools } from './tools/read.js';
 import { isMutating, validateOps } from './validate.js';
-import type { Analysis, Atom, Candidate, Digest, Edl, Overlay, ValidationError } from './types.js';
+import type { Analysis, Atom, Candidate, Digest, Edl, Overlay, ValidationError, VideoSummary } from './types.js';
 
 export interface SessionConfig {
   segment?: SegmentConfig;
@@ -116,6 +117,40 @@ export class Session {
   removeOverlay(id: string): void {
     const applied = applyOps(this.history.edl, [{ op: 'remove_overlay', id }]);
     this.history.commit(applied, `remove overlay`);
+  }
+
+  private summaryCache: VideoSummary | null = null;
+
+  /**
+   * Produce (and cache) a human summary of the video: a 1–2 sentence overview
+   * and a one-line label per moment. Uses the given backend's `summarize` when
+   * available; falls back to the deterministic heuristic on absence or error, so
+   * a summary is always returned.
+   */
+  async summarize(backend: Backend, force = false): Promise<VideoSummary> {
+    if (this.summaryCache && !force) return this.summaryCache;
+    let result: VideoSummary | null = null;
+    if (backend.summarize) {
+      try {
+        result = await backend.summarize(this.digest);
+      } catch {
+        result = null;
+      }
+    }
+    if (!result || !result.moments.length) {
+      result = await new HeuristicBackend().summarize(this.digest);
+    }
+    // Ensure every candidate has a label (fill gaps from the heuristic).
+    const have = new Set(result.moments.map((m) => m.id));
+    if (this.digest.entries.some((e) => !have.has(e.id))) {
+      const fallback = await new HeuristicBackend().summarize(this.digest);
+      const fmap = new Map(fallback.moments.map((m) => [m.id, m.label]));
+      result.moments = this.digest.entries.map(
+        (e) => result!.moments.find((m) => m.id === e.id) ?? { id: e.id, label: fmap.get(e.id) ?? '' },
+      );
+    }
+    this.summaryCache = result;
+    return result;
   }
 
   undo(): string | null {

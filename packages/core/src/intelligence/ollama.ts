@@ -1,6 +1,13 @@
-import type { Patch } from '../types.js';
+import type { Digest, Patch, VideoSummary } from '../types.js';
 import type { Backend, PlanContext } from './index.js';
-import { buildOutboundText, parseModelReply, SYSTEM_PROMPT } from './protocol.js';
+import {
+  buildOutboundText,
+  buildSummaryPrompt,
+  parseModelReply,
+  parseSummaryReply,
+  SUMMARY_SYSTEM,
+  SYSTEM_PROMPT,
+} from './protocol.js';
 
 export interface OllamaConfig {
   /** local Ollama endpoint; default http://127.0.0.1:11434 */
@@ -20,7 +27,7 @@ export class OllamaBackend implements Backend {
 
   constructor(private cfg: OllamaConfig) {}
 
-  async plan(ctx: PlanContext): Promise<Patch> {
+  private async chat(system: string, user: string): Promise<string> {
     const host = (this.cfg.host ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
     const doFetch = this.cfg.fetchImpl ?? fetch;
     const res = await doFetch(`${host}/api/chat`, {
@@ -32,13 +39,21 @@ export class OllamaBackend implements Backend {
         options: { temperature: 0 },
         format: 'json',
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: buildOutboundText(ctx) },
+          { role: 'system', content: system },
+          { role: 'user', content: user },
         ],
       }),
     });
     if (!res.ok) throw new Error(`ollama returned ${res.status} ${res.statusText}`);
     const data = (await res.json()) as { message?: { content?: string } };
-    return parseModelReply(ctx.instruction, data.message?.content ?? '');
+    return data.message?.content ?? '';
+  }
+
+  async plan(ctx: PlanContext): Promise<Patch> {
+    return parseModelReply(ctx.instruction, await this.chat(SYSTEM_PROMPT, buildOutboundText(ctx)));
+  }
+
+  async summarize(digest: Digest): Promise<VideoSummary> {
+    return parseSummaryReply(await this.chat(SUMMARY_SYSTEM, buildSummaryPrompt(digest)));
   }
 }

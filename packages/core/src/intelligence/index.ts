@@ -1,5 +1,5 @@
 import type { ReadTools } from '../tools/read.js';
-import type { Digest, Edl, Patch } from '../types.js';
+import type { Digest, Edl, Patch, VideoSummary } from '../types.js';
 
 /** One prior instruction and the interpretation we derived from it. */
 export interface HistoryEntry {
@@ -32,6 +32,8 @@ export interface Backend {
   /** true if this backend sends anything over the network */
   readonly network: boolean;
   plan(ctx: PlanContext): Promise<Patch>;
+  /** overview + per-moment one-liners from the digest (optional per backend) */
+  summarize?(digest: Digest): Promise<VideoSummary>;
 }
 
 export { HeuristicBackend } from './heuristic.js';

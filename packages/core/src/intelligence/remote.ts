@@ -1,6 +1,13 @@
-import type { Patch } from '../types.js';
+import type { Digest, Patch, VideoSummary } from '../types.js';
 import type { Backend, PlanContext } from './index.js';
-import { buildOutboundText, parseModelReply, SYSTEM_PROMPT } from './protocol.js';
+import {
+  buildOutboundText,
+  buildSummaryPrompt,
+  parseModelReply,
+  parseSummaryReply,
+  SUMMARY_SYSTEM,
+  SYSTEM_PROMPT,
+} from './protocol.js';
 
 /**
  * Gate called with the EXACT text about to leave the machine. Must resolve true
@@ -60,5 +67,28 @@ export class RemoteBackend implements Backend {
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const content = data.choices?.[0]?.message?.content ?? '';
     return parseModelReply(ctx.instruction, content);
+  }
+
+  async summarize(digest: Digest): Promise<VideoSummary> {
+    const prompt = buildSummaryPrompt(digest);
+    if (!(await this.gate(prompt))) return { summary: '', moments: [] };
+    const key = await this.cfg.getApiKey();
+    if (!key) throw new Error('no API key available');
+    const doFetch = this.cfg.fetchImpl ?? fetch;
+    const res = await doFetch(`${this.cfg.apiBase.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: this.cfg.model,
+        temperature: 0,
+        messages: [
+          { role: 'system', content: SUMMARY_SYSTEM },
+          { role: 'user', content: prompt },
+        ],
+      }),
+    });
+    if (!res.ok) throw new Error(`provider returned ${res.status} ${res.statusText}`);
+    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    return parseSummaryReply(data.choices?.[0]?.message?.content ?? '');
   }
 }

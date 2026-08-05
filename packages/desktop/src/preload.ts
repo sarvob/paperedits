@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('pve', {
   setSpeed: (entryId: string, speed: number) => ipcRenderer.invoke('session:setSpeed', entryId, speed),
   outbound: (instruction: string) => ipcRenderer.invoke('session:outbound', instruction),
   setBackend: (kind: string, config: unknown) => ipcRenderer.invoke('settings:setBackend', kind, config),
+  summarize: (force?: boolean) => ipcRenderer.invoke('session:summarize', !!force),
   addOverlay: (overlay: unknown) => ipcRenderer.invoke('overlay:add', overlay),
   updateOverlay: (id: string, patch: unknown, label: string) => ipcRenderer.invoke('overlay:update', id, patch, label),
   removeOverlay: (id: string) => ipcRenderer.invoke('overlay:remove', id),

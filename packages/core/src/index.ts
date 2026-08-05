@@ -16,4 +16,11 @@ export { ReadTools } from './tools/read.js';
 export * from './intelligence/index.js';
 export type { OutboundGate, RemoteConfig } from './intelligence/remote.js';
 export type { OllamaConfig } from './intelligence/ollama.js';
-export { SYSTEM_PROMPT, buildOutboundText, parseModelReply } from './intelligence/protocol.js';
+export {
+  SYSTEM_PROMPT,
+  SUMMARY_SYSTEM,
+  buildOutboundText,
+  buildSummaryPrompt,
+  parseModelReply,
+  parseSummaryReply,
+} from './intelligence/protocol.js';

@@ -111,6 +111,16 @@ export interface Digest {
   entries: DigestEntry[];
 }
 
+/**
+ * A human-readable understanding of the video, produced from the transcript +
+ * digest by the LLM (or a deterministic fallback): a 1–2 sentence overview and a
+ * one-line summary per key moment, keyed to candidate ids.
+ */
+export interface VideoSummary {
+  summary: string;
+  moments: { id: string; label: string }[];
+}
+
 // ---------------------------------------------------------------------------
 // EDL — the edit decision list (the "document about the video")
 // ---------------------------------------------------------------------------

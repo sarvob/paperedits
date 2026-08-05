@@ -1,5 +1,5 @@
 import { digestToPrompt } from '../digest.js';
-import type { MutatingOp, Op, Patch } from '../types.js';
+import type { Digest, MutatingOp, Op, Patch, VideoSummary } from '../types.js';
 import type { PlanContext } from './index.js';
 
 /**
@@ -67,6 +67,38 @@ export function parseModelReply(instruction: string, raw: string): Patch {
     ops: mutating,
     interpretation: typeof parsed.interpretation === 'string' ? parsed.interpretation : '(no interpretation)',
   };
+}
+
+// ---------------------------------------------------------------------------
+// Video summary (overview + per-moment one-liners)
+// ---------------------------------------------------------------------------
+
+export const SUMMARY_SYSTEM = `You summarize a video from a digest of its segments.
+Return ONLY a JSON object:
+  {"summary": "<1-2 sentence overview of what the whole video is about>",
+   "moments": [{"id": "<segment id>", "label": "<= 8 word summary of that moment>"}, ...]}
+RULES:
+- Use ONLY the segment ids given. Include one moment per segment, in order.
+- Labels are terse, specific, human — like chapter titles. No "Segment 1".
+- Base everything on the provided speech/objects; do not invent content.`;
+
+/** Build the summary request payload (digest text). */
+export function buildSummaryPrompt(digest: Digest): string {
+  return [
+    `Video is ${Math.round(digest.durationSec)}s, ${digest.entries.length} segments.`,
+    digestToPrompt(digest),
+  ].join('\n');
+}
+
+/** Parse the model's summary JSON; tolerant of missing moments. */
+export function parseSummaryReply(raw: string): VideoSummary {
+  const parsed = JSON.parse(extractJson(raw)) as { summary?: string; moments?: unknown };
+  const moments = Array.isArray(parsed.moments)
+    ? (parsed.moments as { id?: string; label?: string }[])
+        .filter((m) => m && typeof m.id === 'string' && typeof m.label === 'string')
+        .map((m) => ({ id: m.id!, label: m.label! }))
+    : [];
+  return { summary: typeof parsed.summary === 'string' ? parsed.summary : '', moments };
 }
 
 /** Pull the first balanced JSON object out of a possibly-chatty reply. */
