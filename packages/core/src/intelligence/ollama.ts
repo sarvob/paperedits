@@ -41,7 +41,10 @@ export class OllamaBackend implements Backend {
       body: JSON.stringify({
         model: this.cfg.model,
         stream: false,
-        options: { temperature: json ? 0 : 0.3 },
+        // num_ctx: Ollama defaults to a small context (2-4K) which silently
+        // TRUNCATES a 30-min video's ~10K-token digest — answers then only
+        // "see" the first minutes. 16K covers an hour-long video's digest.
+        options: { temperature: json ? 0 : 0.3, num_ctx: 16384 },
         ...(json ? { format: 'json' } : {}),
         messages: [
           { role: 'system', content: system },

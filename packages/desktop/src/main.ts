@@ -43,9 +43,36 @@ let sourcePath: string | null = null;
 const importer = new FfmpegImporter();
 
 // The heuristic backend is always available as the fallback; `currentBackend`
-// is what the user selected (heuristic / ollama / remote).
+// is what the user selected (heuristic / ollama / anthropic / remote).
 const heuristicBackend = new HeuristicBackend();
 let currentBackend: Backend = heuristicBackend;
+let currentBackendDetail = 'heuristic';
+
+/**
+ * The chat is the primary way to use the tool, so it must have a real model by
+ * default: at startup, use a local Ollama model when one is available instead
+ * of the pattern heuristic. The user can still switch in the Intelligence panel.
+ */
+async function autoSelectBackend(): Promise<void> {
+  try {
+    const res = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(1500) });
+    if (!res.ok) return;
+    const data = (await res.json()) as { models?: { name: string }[] };
+    const models = (data.models ?? []).map((m) => m.name);
+    if (!models.length) return;
+    const model = models.find((m) => m.startsWith('llama3.2')) ?? models[0]!;
+    currentBackend = new OllamaBackend({ model });
+    currentBackendDetail = `ollama · ${model}`;
+  } catch {
+    /* Ollama not running — stay on heuristic */
+  }
+}
+
+ipcMain.handle('backend:current', () => ({
+  name: currentBackend.name,
+  detail: currentBackendDetail,
+  network: currentBackend.network,
+}));
 
 /** Remote sends only after the user approves the exact outbound text.
  * "Always allow" persists for the session so summary+highlights+chat don't
@@ -191,18 +218,22 @@ ipcMain.handle('settings:setBackend', async (_e, kind: string, config: { model?:
         models.length === 1
           ? new OllamaBackend({ model: models[0]!, host: config.host })
           : new CascadeBackend(models.map((m) => ({ backend: new OllamaBackend({ model: m, host: config.host }), label: m })));
+      currentBackendDetail = `ollama · ${models.join(' → ')}`;
     } else if (kind === 'anthropic') {
       if (!config.apiKey) return { ok: false, error: 'API key required' };
       currentBackend = new AnthropicBackend(
         { apiKey: config.apiKey, model: config.model || 'claude-haiku-4-5' },
         outboundGate,
       );
+      currentBackendDetail = `anthropic · ${config.model || 'claude-haiku-4-5'}`;
     } else if (kind === 'remote') {
       if (!config.apiBase || !config.model) return { ok: false, error: 'apiBase and model required' };
       const key = config.apiKey || '';
       currentBackend = new RemoteBackend({ apiBase: config.apiBase, model: config.model, getApiKey: async () => key }, outboundGate);
+      currentBackendDetail = `remote · ${config.model}`;
     } else {
       currentBackend = heuristicBackend;
+      currentBackendDetail = 'heuristic';
     }
     return { ok: true, name: currentBackend.name, network: currentBackend.network };
   } catch (err) {
@@ -335,7 +366,11 @@ const MIME: Record<string, string> = {
   '.webm': 'video/webm', '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo',
 };
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Pick the best available brain BEFORE the window loads, so the first
+  // summary/highlights/chat all use a real model when one exists.
+  await autoSelectBackend();
+
   // Serve the user's local media to the <video> element, honouring HTTP Range
   // requests so the media pipeline can seek/decode (net.fetch(file://) does not
   // give the element a seekable stream, which breaks H.264 decode).

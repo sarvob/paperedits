@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('pve', {
   chat: (message: string) => ipcRenderer.invoke('chat:send', message),
   ollamaModels: () => ipcRenderer.invoke('ollama:models'),
   setBackend: (kind: string, config: unknown) => ipcRenderer.invoke('settings:setBackend', kind, config),
+  currentBackend: () => ipcRenderer.invoke('backend:current'),
   summarize: (force?: boolean) => ipcRenderer.invoke('session:summarize', !!force),
   highlights: (force?: boolean) => ipcRenderer.invoke('session:highlights', !!force),
   addOverlay: (overlay: unknown) => ipcRenderer.invoke('overlay:add', overlay),

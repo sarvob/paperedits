@@ -28,6 +28,7 @@ interface PveApi {
   chat(message: string): Promise<{ ok: boolean; kind?: 'edit' | 'answer'; text?: string; usedFallback?: boolean; error?: string } & Partial<Snapshot>>;
   ollamaModels(): Promise<{ ok: boolean; models: string[] }>;
   setBackend(kind: string, config: unknown): Promise<{ ok: boolean; name?: string; network?: boolean; error?: string }>;
+  currentBackend(): Promise<{ name: string; detail: string; network: boolean }>;
   summarize(force?: boolean): Promise<{ summary: string; moments: { id: string; label: string }[]; error?: string } | null>;
   highlights(force?: boolean): Promise<{ highlights: Highlight[]; source?: string; error?: string } | null>;
   addOverlay(o: unknown): Promise<Snapshot | null>;
@@ -750,6 +751,17 @@ $('applyBackend').onclick = async () => {
 };
 
 (async () => {
+  // Reflect the auto-selected backend (Ollama when available) before anything
+  // else runs, so summary/highlights labels and the chat all show the truth.
+  const cur = await pve.currentBackend();
+  $('backendStatus').textContent = `Active: ${cur.detail} (${cur.network ? 'remote' : 'local'})`;
+  const badge = document.querySelector('.brand .mode');
+  if (badge) badge.textContent = `${cur.network ? 'remote' : 'local'} · ${cur.name}`;
+  if (cur.name === 'ollama') ($('backendSel') as HTMLSelectElement).value = 'ollama';
+  if (cur.name === 'heuristic') {
+    addMsg('bot', 'Heads up: no AI model is active (Ollama isn\'t running), so answers will be rough. Start Ollama or pick Anthropic API in the Intelligence panel.');
+  }
+
   await renderChecks();
   const emojiRow = $('emojiRow');
   for (const em of EMOJIS) { const b = document.createElement('button'); b.textContent = em; b.onclick = () => addEmojiOverlay(em); emojiRow.appendChild(b); }

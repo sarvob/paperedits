@@ -60,36 +60,34 @@ export class HeuristicBackend implements Backend {
     };
   }
 
-  /** Pattern-based Q&A (no model). Handles the common questions from the digest. */
+  /**
+   * Pattern-based Q&A (no model). Deliberately SHORT — a few top moments, never
+   * the full list — and honest that it's the degraded path. Real answers come
+   * from an LLM backend; this only exists so the chat never goes dark.
+   */
   async answer(ctx: AnswerContext): Promise<string> {
     const q = ctx.question.toLowerCase();
     const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-    const sum = ctx.summary ?? (await this.summarize(ctx.digest)).summary;
-    const moments = (await this.summarize(ctx.digest)).moments;
     const byId = new Map(ctx.digest.entries.map((e) => [e.id, e]));
+    const hint = '\n\n(No AI model is active, so this is a rough cut from signal analysis — select Ollama or Anthropic API in the Intelligence panel for real answers.)';
 
     if (/how long|duration|length/.test(q)) {
       return `The video is ${fmt(ctx.digest.durationSec)} long, across ${ctx.digest.entries.length} segments.`;
     }
-    if (/highlight|key moment|key part|important|interesting|main/.test(q)) {
-      const top = ctx.digest.entries
-        .map((e, i) => ({ e, label: moments[i]?.label ?? e.speech.slice(0, 40) }))
-        .sort((a, b) => b.e.activity - a.e.activity)
-        .slice(0, 4)
-        .sort((a, b) => a.e.start - b.e.start);
-      return (
-        `Key highlights:\n` +
-        top.map((t) => `• ${fmt(t.e.start)} — ${t.label}`).join('\n')
-      );
-    }
-    if (/summary|summarize|about|what.*(video|it)|overview/.test(q)) {
-      return `${sum}\n\nMoments:\n` + moments.map((m) => `• ${fmt(byId.get(m.id)!.start)} — ${m.label}`).join('\n');
-    }
     if (/drill|object|show|see|appear/.test(q)) {
       const objs = [...new Set(ctx.digest.entries.flatMap((e) => e.objects))];
-      return objs.length ? `Detected objects: ${objs.join(', ')}.` : `No objects were detected (visual detection is not enabled yet).`;
+      return objs.length ? `Detected objects: ${objs.join(', ')}.` : `No objects were detected (visual detection is not enabled yet).${hint}`;
     }
-    return `${sum}\n\n(I can answer questions about the content, or make edits — try "summarize this" or "speed up the quiet parts".)`;
+    // Everything else — "what is this about", "highlights", open questions —
+    // gets the same compact shape: one-line gist + top-5 ranked moments.
+    const sum = ctx.summary ?? (await this.summarize(ctx.digest)).summary;
+    const top = (await this.highlights(ctx.digest)).highlights.slice(0, 5);
+    const gist = sum.split(/\s+/).slice(0, 30).join(' ');
+    return (
+      `${gist}${sum.split(/\s+/).length > 30 ? '…' : ''}\n\nTop moments:\n` +
+      top.map((h) => `• ${fmt(byId.get(h.id)?.start ?? 0)} — ${h.title}`).join('\n') +
+      hint
+    );
   }
 
   /** activity at/above this is "key" when the user asks for important parts */
