@@ -19,8 +19,14 @@ export type { OllamaConfig } from './intelligence/ollama.js';
 export {
   SYSTEM_PROMPT,
   SUMMARY_SYSTEM,
+  ANSWER_SYSTEM,
+  HIGHLIGHTS_SYSTEM,
   buildOutboundText,
   buildSummaryPrompt,
+  buildAnswerPrompt,
+  buildHighlightsPrompt,
   parseModelReply,
   parseSummaryReply,
+  parseHighlightsReply,
 } from './intelligence/protocol.js';
+export type { AnthropicConfig } from './intelligence/anthropic.js';

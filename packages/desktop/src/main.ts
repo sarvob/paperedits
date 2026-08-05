@@ -5,6 +5,8 @@ import { mkdtemp, stat as fsStat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { Readable } from 'node:stream';
 import {
+  AnthropicBackend,
+  CascadeBackend,
   HeuristicBackend,
   OllamaBackend,
   RemoteBackend,
@@ -45,17 +47,22 @@ const importer = new FfmpegImporter();
 const heuristicBackend = new HeuristicBackend();
 let currentBackend: Backend = heuristicBackend;
 
-/** Remote sends only after the user approves the exact outbound text. */
+/** Remote sends only after the user approves the exact outbound text.
+ * "Always allow" persists for the session so summary+highlights+chat don't
+ * each require a click; the outbound pane still shows every payload. */
+let alwaysAllowSend = false;
 const outboundGate: OutboundGate = async (text) => {
+  if (alwaysAllowSend) return true;
   const r = await dialog.showMessageBox({
     type: 'question',
-    buttons: ['Send', 'Cancel'],
+    buttons: ['Send', 'Always allow this session', 'Cancel'],
     defaultId: 0,
-    cancelId: 1,
+    cancelId: 2,
     message: 'Send this text to the remote model?',
     detail: text.length > 3000 ? text.slice(0, 3000) + '\n…(truncated)' : text,
   });
-  return r.response === 0;
+  if (r.response === 1) alwaysAllowSend = true;
+  return r.response !== 2;
 };
 
 /** Serializable snapshot the renderer draws from. */
@@ -66,6 +73,9 @@ function snapshot(): {
   tokens: number;
   timeline: string[];
   sourcePath: string | null;
+  audioLevels: number[];
+  activityPerSec: number[];
+  mediaUrl: string | null;
 } | null {
   if (!session) return null;
   const digestText = digestToPrompt(session.digest);
@@ -76,6 +86,8 @@ function snapshot(): {
     tokens: estimateTokens(digestText),
     timeline: session.timeline(),
     sourcePath,
+    audioLevels: session.analysis.audioLevels ?? [],
+    activityPerSec: session.analysis.activityPerSec,
     // media URL the renderer can put on a <video> element
     mediaUrl: sourcePath ? `pvemedia://local/${encodeURIComponent(sourcePath)}` : null,
   };
@@ -147,10 +159,44 @@ ipcMain.handle('session:prompt', async (_e, instruction: string) => {
   };
 });
 
-ipcMain.handle('settings:setBackend', async (_e, kind: string, config: { model?: string; host?: string; apiBase?: string; apiKey?: string }) => {
+ipcMain.handle('ollama:models', async () => {
+  try {
+    const res = await fetch('http://127.0.0.1:11434/api/tags');
+    if (!res.ok) return { ok: false, models: [] as string[] };
+    const data = (await res.json()) as { models?: { name: string }[] };
+    return { ok: true, models: (data.models ?? []).map((m) => m.name).sort() };
+  } catch {
+    return { ok: false, models: [] as string[] };
+  }
+});
+
+ipcMain.handle('chat:send', async (_e, message: string) => {
+  if (!session) return { ok: false, error: 'no file imported' };
+  try {
+    const res = await session.chat(currentBackend, message, heuristicBackend);
+    if (res.kind === 'edit') {
+      return { ok: true, kind: 'edit', text: res.interpretation, usedFallback: res.usedFallback, ...snapshot()! };
+    }
+    return { ok: true, kind: 'answer', text: res.text };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+});
+
+ipcMain.handle('settings:setBackend', async (_e, kind: string, config: { model?: string; models?: string[]; host?: string; apiBase?: string; apiKey?: string }) => {
   try {
     if (kind === 'ollama') {
-      currentBackend = new OllamaBackend({ model: config.model || 'llama3.2:3b', host: config.host });
+      const models = config.models?.length ? config.models : [config.model || 'llama3.2:3b'];
+      currentBackend =
+        models.length === 1
+          ? new OllamaBackend({ model: models[0]!, host: config.host })
+          : new CascadeBackend(models.map((m) => ({ backend: new OllamaBackend({ model: m, host: config.host }), label: m })));
+    } else if (kind === 'anthropic') {
+      if (!config.apiKey) return { ok: false, error: 'API key required' };
+      currentBackend = new AnthropicBackend(
+        { apiKey: config.apiKey, model: config.model || 'claude-haiku-4-5' },
+        outboundGate,
+      );
     } else if (kind === 'remote') {
       if (!config.apiBase || !config.model) return { ok: false, error: 'apiBase and model required' };
       const key = config.apiKey || '';
@@ -188,6 +234,25 @@ ipcMain.handle('session:summarize', async (_e, force: boolean) => {
     return await session.summarize(currentBackend, !!force);
   } catch (err) {
     return { summary: '', moments: [], error: (err as Error).message };
+  }
+});
+
+ipcMain.handle('session:highlights', async (_e, force: boolean) => {
+  if (!session) return null;
+  try {
+    const h = await session.getHighlights(currentBackend, !!force);
+    // Attach segment timing so the UI can seek without recomputing.
+    const byId = new Map(session.candidates.map((c) => [c.id, c]));
+    return {
+      highlights: h.highlights.map((x) => ({
+        ...x,
+        start: byId.get(x.id)?.start ?? 0,
+        end: byId.get(x.id)?.end ?? 0,
+      })),
+      source: currentBackend.name,
+    };
+  } catch (err) {
+    return { highlights: [], error: (err as Error).message };
   }
 });
 

@@ -75,67 +75,102 @@
             <div class="summary-text" id="summaryText">Summarizing…</div>
           </div>
 
-          <div class="timeline-wrap">
-            <div class="timeline" id="timeline"></div>
-            <div class="overlay-track" id="overlayTrack"></div>
-            <div class="ruler" id="ruler"></div>
+          <div class="tracks-wrap">
+            <div class="tracks-head">
+              <span>Timeline</span>
+              <span class="track-zoom">
+                <button id="zoomOut" title="Zoom out">−</button>
+                <button id="zoomFit" title="Fit">Fit</button>
+                <button id="zoomIn" title="Zoom in">＋</button>
+              </span>
+            </div>
+            <div class="tracks" id="tracks">
+              <div class="tracks-inner" id="tracksInner">
+                <div class="t-ruler" id="ruler"></div>
+                <div class="t-clips" id="trackClips"></div>
+                <canvas class="t-audio" id="trackAudio" height="26"></canvas>
+                <div class="t-ov" id="overlayTrack"></div>
+                <div class="playhead" id="playheadLine"></div>
+              </div>
+            </div>
           </div>
 
-          <div class="commandbar">
-            <input
-              id="cmd"
-              type="text"
-              placeholder="Tell the editor what to do — e.g. “key parts 1x, rest 10x, label the fast parts”"
-              autocomplete="off"
-            />
-            <button id="applyBtn" class="primary">Apply</button>
-          </div>
-          <div class="interpretation" id="interpretation"></div>
+          <div class="moments-head">★ Key moments <span class="moments-src" id="hlSrc"></span>
+            <button id="hlRefresh" title="Regenerate">↻</button></div>
+          <div class="highlights" id="highlights"><span class="muted-note">Import a video to rank its key moments.</span></div>
 
-          <div class="moments-head">Key moments</div>
-          <div class="edl" id="edl"></div>
+          <details class="acc seg-acc">
+            <summary>All segments (edit speeds)</summary>
+            <div class="edl" id="edl"></div>
+          </details>
         </div>
       </section>
 
       <aside class="sidebar">
-        <div class="panel">
-          <h3>Intelligence</h3>
-          <select id="backendSel" class="be-select">
-            <option value="heuristic">Heuristic — no LLM, local</option>
-            <option value="ollama">Ollama — local LLM</option>
-            <option value="remote">Remote — BYO key</option>
-          </select>
-          <div id="ollamaCfg" class="be-cfg" hidden>
-            <input id="ollamaModel" type="text" value="llama3.2:3b" placeholder="model (e.g. llama3.2:3b)" />
+        <div class="sidebar-panels">
+          <details class="acc" open>
+            <summary>Intelligence</summary>
+            <div class="acc-body">
+              <select id="backendSel" class="be-select">
+                <option value="heuristic">Heuristic — no LLM, local</option>
+                <option value="ollama">Ollama — local LLM</option>
+                <option value="anthropic">Anthropic API — powerful, cheap</option>
+                <option value="remote">Remote — OpenAI-compatible</option>
+              </select>
+              <div id="ollamaCfg" class="be-cfg" hidden>
+                <div class="model-picker-label">Models (checked run cheapest→capable, escalating on low confidence):</div>
+                <div class="model-picker" id="modelPicker">loading models…</div>
+              </div>
+              <div id="anthropicCfg" class="be-cfg" hidden>
+                <select id="anthropicModel" class="be-select">
+                  <option value="claude-haiku-4-5" selected>claude-haiku-4-5 — cheapest ($1/$5 per MTok)</option>
+                  <option value="claude-sonnet-5">claude-sonnet-5 — balanced</option>
+                  <option value="claude-opus-5">claude-opus-5 — most capable</option>
+                </select>
+                <input id="anthropicKey" type="password" placeholder="API key — stays on this machine" />
+              </div>
+              <div id="remoteCfg" class="be-cfg" hidden>
+                <input id="remoteBase" type="text" placeholder="https://api.openai.com/v1" />
+                <input id="remoteModel" type="text" placeholder="model (e.g. gpt-4o-mini)" />
+                <input id="remoteKey" type="password" placeholder="API key — stays on this machine" />
+              </div>
+              <button id="applyBackend">Use this backend</button>
+              <div id="backendStatus" class="be-status">Active: heuristic (local)</div>
+            </div>
+          </details>
+
+          <details class="acc" id="overlayPanel" hidden>
+            <summary>Overlays</summary>
+            <div class="acc-body"><div class="overlay-list" id="overlayList"></div></div>
+          </details>
+
+          <details class="acc">
+            <summary>🔒 What leaves the machine</summary>
+            <div class="acc-body">
+              <div class="outbound-status" id="outboundStatus">Local mode — 0 bytes leave.</div>
+              <pre class="outbound" id="outbound">Ask something to preview the text a remote backend would send.</pre>
+            </div>
+          </details>
+
+          <details class="acc">
+            <summary>System</summary>
+            <div class="acc-body"><ul class="checks" id="checks"></ul></div>
+          </details>
+
+          <details class="acc">
+            <summary>History</summary>
+            <div class="acc-body"><ol class="history" id="history"></ol></div>
+          </details>
+        </div>
+
+        <div class="chat">
+          <div class="chat-title">Chat <span class="chat-hint">ask about the video, or tell me an edit</span></div>
+          <div class="chat-log" id="chatLog"></div>
+          <div class="chat-input">
+            <input id="chatInput" type="text" autocomplete="off"
+              placeholder="e.g. “what are the key highlights?” or “speed up the quiet parts”" />
+            <button id="chatSend" class="primary">Send</button>
           </div>
-          <div id="remoteCfg" class="be-cfg" hidden>
-            <input id="remoteBase" type="text" placeholder="https://api.openai.com/v1" />
-            <input id="remoteModel" type="text" placeholder="model (e.g. gpt-4o-mini)" />
-            <input id="remoteKey" type="password" placeholder="API key — stays on this machine" />
-          </div>
-          <button id="applyBackend">Use this backend</button>
-          <div id="backendStatus" class="be-status">Active: heuristic (local)</div>
-        </div>
-
-        <div class="panel" id="overlayPanel" hidden>
-          <h3>Overlays</h3>
-          <div class="overlay-list" id="overlayList"></div>
-        </div>
-
-        <div class="panel">
-          <h3>🔒 What leaves the machine</h3>
-          <div class="outbound-status" id="outboundStatus">Local mode — 0 bytes leave.</div>
-          <pre class="outbound" id="outbound">Type an instruction to preview the digest text a remote backend would send.</pre>
-        </div>
-
-        <div class="panel">
-          <h3>System</h3>
-          <ul class="checks" id="checks"></ul>
-        </div>
-
-        <div class="panel">
-          <h3>History</h3>
-          <ol class="history" id="history"></ol>
         </div>
       </aside>
     </main>

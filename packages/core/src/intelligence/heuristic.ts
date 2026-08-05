@@ -1,5 +1,5 @@
-import type { Digest, DigestEntry, MutatingOp, Patch, VideoSummary } from '../types.js';
-import type { Backend, PlanContext } from './index.js';
+import type { Digest, DigestEntry, MutatingOp, Patch, VideoHighlights, VideoSummary } from '../types.js';
+import type { AnswerContext, Backend, PlanContext } from './index.js';
 
 /**
  * No-LLM backend. Parses a useful subset of natural language with regex +
@@ -34,6 +34,62 @@ export class HeuristicBackend implements Backend {
     }
     const moments = digest.entries.map((e) => ({ id: e.id, label: momentLabel(e) }));
     return { summary, moments };
+  }
+
+  /** No-model highlights: rank by activity + speech density. The "why" is honest
+   * about being signal-based, not semantic — an LLM backend does much better. */
+  async highlights(digest: Digest): Promise<VideoHighlights> {
+    const scored = digest.entries.map((e) => {
+      const speechDensity = Math.min(1, e.speech.split(/\s+/).filter(Boolean).length / 25);
+      const score = 0.6 * e.activity + 0.3 * speechDensity + (e.objects.length ? 0.1 : 0);
+      return { e, score };
+    });
+    const top = scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.min(5, Math.max(3, Math.ceil(digest.entries.length / 6))));
+    return {
+      highlights: top.map(({ e, score }) => ({
+        id: e.id,
+        title: momentLabel(e),
+        why:
+          e.activity >= 0.5
+            ? 'High on-screen activity here' + (e.objects.length ? ` (${e.objects.slice(0, 2).join(', ')} detected)` : '')
+            : 'Dense narration in this section',
+        score: Number(score.toFixed(2)),
+      })),
+    };
+  }
+
+  /** Pattern-based Q&A (no model). Handles the common questions from the digest. */
+  async answer(ctx: AnswerContext): Promise<string> {
+    const q = ctx.question.toLowerCase();
+    const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+    const sum = ctx.summary ?? (await this.summarize(ctx.digest)).summary;
+    const moments = (await this.summarize(ctx.digest)).moments;
+    const byId = new Map(ctx.digest.entries.map((e) => [e.id, e]));
+
+    if (/how long|duration|length/.test(q)) {
+      return `The video is ${fmt(ctx.digest.durationSec)} long, across ${ctx.digest.entries.length} segments.`;
+    }
+    if (/highlight|key moment|key part|important|interesting|main/.test(q)) {
+      const top = ctx.digest.entries
+        .map((e, i) => ({ e, label: moments[i]?.label ?? e.speech.slice(0, 40) }))
+        .sort((a, b) => b.e.activity - a.e.activity)
+        .slice(0, 4)
+        .sort((a, b) => a.e.start - b.e.start);
+      return (
+        `Key highlights:\n` +
+        top.map((t) => `• ${fmt(t.e.start)} — ${t.label}`).join('\n')
+      );
+    }
+    if (/summary|summarize|about|what.*(video|it)|overview/.test(q)) {
+      return `${sum}\n\nMoments:\n` + moments.map((m) => `• ${fmt(byId.get(m.id)!.start)} — ${m.label}`).join('\n');
+    }
+    if (/drill|object|show|see|appear/.test(q)) {
+      const objs = [...new Set(ctx.digest.entries.flatMap((e) => e.objects))];
+      return objs.length ? `Detected objects: ${objs.join(', ')}.` : `No objects were detected (visual detection is not enabled yet).`;
+    }
+    return `${sum}\n\n(I can answer questions about the content, or make edits — try "summarize this" or "speed up the quiet parts".)`;
   }
 
   /** activity at/above this is "key" when the user asks for important parts */

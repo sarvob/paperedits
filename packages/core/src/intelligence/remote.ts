@@ -1,6 +1,8 @@
 import type { Digest, Patch, VideoSummary } from '../types.js';
-import type { Backend, PlanContext } from './index.js';
+import type { AnswerContext, Backend, PlanContext } from './index.js';
 import {
+  ANSWER_SYSTEM,
+  buildAnswerPrompt,
   buildOutboundText,
   buildSummaryPrompt,
   parseModelReply,
@@ -90,5 +92,28 @@ export class RemoteBackend implements Backend {
     if (!res.ok) throw new Error(`provider returned ${res.status} ${res.statusText}`);
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     return parseSummaryReply(data.choices?.[0]?.message?.content ?? '');
+  }
+
+  async answer(ctx: AnswerContext): Promise<string> {
+    const prompt = buildAnswerPrompt(ctx.digest, ctx.summary, ctx.question);
+    if (!(await this.gate(prompt))) return 'send cancelled by user';
+    const key = await this.cfg.getApiKey();
+    if (!key) throw new Error('no API key available');
+    const doFetch = this.cfg.fetchImpl ?? fetch;
+    const res = await doFetch(`${this.cfg.apiBase.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: this.cfg.model,
+        temperature: 0.3,
+        messages: [
+          { role: 'system', content: ANSWER_SYSTEM },
+          { role: 'user', content: prompt },
+        ],
+      }),
+    });
+    if (!res.ok) throw new Error(`provider returned ${res.status} ${res.statusText}`);
+    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    return (data.choices?.[0]?.message?.content ?? '').trim();
   }
 }

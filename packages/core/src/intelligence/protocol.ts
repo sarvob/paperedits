@@ -1,5 +1,5 @@
 import { digestToPrompt } from '../digest.js';
-import type { Digest, MutatingOp, Op, Patch, VideoSummary } from '../types.js';
+import type { Digest, MutatingOp, Op, Patch, VideoHighlights, VideoSummary } from '../types.js';
 import type { PlanContext } from './index.js';
 
 /**
@@ -19,7 +19,10 @@ RULES:
 - Return a PATCH against the CURRENT edl — change only what the instruction asks.
   Do not reclassify from scratch unless explicitly told to.
 - Respond with ONLY a JSON object, no prose, of the form:
-  {"interpretation": "<one line>", "ops": [ <op>, ... ]}
+  {"interpretation": "<one line>", "ops": [ <op>, ... ], "confidence": <0..1>}
+- confidence is how sure you are the ops correctly capture the request (0..1).
+- If the message is a QUESTION about the video (not an edit request), return
+  ops: [] with a low confidence — it will be answered separately.
 - Valid ops:
   {"op":"classify","definition":str,"keyIds":[id,...]}
   {"op":"retime","ids":[id,...],"speed":number}
@@ -59,14 +62,69 @@ export function buildOutboundText(ctx: PlanContext): string {
 /** Parse the model's JSON reply into a Patch. Throws on unparseable output. */
 export function parseModelReply(instruction: string, raw: string): Patch {
   const json = extractJson(raw);
-  const parsed = JSON.parse(json) as { interpretation?: string; ops?: unknown };
+  const parsed = JSON.parse(json) as { interpretation?: string; ops?: unknown; confidence?: unknown };
   const ops = Array.isArray(parsed.ops) ? (parsed.ops as Op[]) : [];
   const mutating = ops.filter((o): o is MutatingOp => o.op !== 'export');
+  const confidence = typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : undefined;
   return {
     instruction,
     ops: mutating,
     interpretation: typeof parsed.interpretation === 'string' ? parsed.interpretation : '(no interpretation)',
+    ...(confidence != null ? { confidence } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Highlights — ranked key moments with reasons
+// ---------------------------------------------------------------------------
+
+export const HIGHLIGHTS_SYSTEM = `You identify the KEY moments of a video from a
+digest of its segments. Return ONLY a JSON object:
+  {"highlights": [{"id": "<segment id>", "title": "<= 8 word title",
+    "why": "<one sentence: why this moment matters>", "score": <0..1>}, ...]}
+RULES:
+- Select only the genuinely important moments (typically 3-8, not every segment).
+- Rank by importance via score (1 = most important).
+- Use ONLY the segment ids given. Base everything on the provided speech/objects;
+  do not invent content. "why" should be specific to this video, not generic.`;
+
+export function buildHighlightsPrompt(digest: Digest): string {
+  return buildSummaryPrompt(digest);
+}
+
+export function parseHighlightsReply(raw: string): VideoHighlights {
+  const parsed = JSON.parse(extractJson(raw)) as { highlights?: unknown };
+  const list = Array.isArray(parsed.highlights) ? parsed.highlights : [];
+  const highlights = (list as { id?: string; title?: string; why?: string; score?: number }[])
+    .filter((h) => h && typeof h.id === 'string' && typeof h.title === 'string')
+    .map((h) => ({
+      id: h.id!,
+      title: h.title!,
+      why: typeof h.why === 'string' ? h.why : '',
+      score: typeof h.score === 'number' ? Math.max(0, Math.min(1, h.score)) : 0.5,
+    }))
+    .sort((a, b) => b.score - a.score);
+  return { highlights };
+}
+
+// ---------------------------------------------------------------------------
+// Q&A — answering questions about the video (not edits)
+// ---------------------------------------------------------------------------
+
+export const ANSWER_SYSTEM = `You answer questions about a video using the digest
+of its segments (speech, activity, detected objects) and an optional summary.
+Be concise and specific. Cite timestamps (m:ss) when useful. If the digest does
+not contain the answer, say so briefly. Plain text, no JSON, no markdown headers.`;
+
+/** Build the Q&A payload: summary (if any) + digest + the question. */
+export function buildAnswerPrompt(digest: Digest, summary: string | undefined, question: string): string {
+  return [
+    summary ? `SUMMARY: ${summary}\n` : '',
+    `DIGEST (${digest.entries.length} segments, ${Math.round(digest.durationSec)}s):`,
+    digestToPrompt(digest),
+    '',
+    `QUESTION: ${question}`,
+  ].join('\n');
 }
 
 // ---------------------------------------------------------------------------

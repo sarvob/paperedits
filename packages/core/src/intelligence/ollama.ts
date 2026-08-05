@@ -1,8 +1,13 @@
-import type { Digest, Patch, VideoSummary } from '../types.js';
-import type { Backend, PlanContext } from './index.js';
+import type { Digest, Patch, VideoHighlights, VideoSummary } from '../types.js';
+import type { AnswerContext, Backend, PlanContext } from './index.js';
 import {
+  ANSWER_SYSTEM,
+  buildAnswerPrompt,
+  buildHighlightsPrompt,
   buildOutboundText,
   buildSummaryPrompt,
+  HIGHLIGHTS_SYSTEM,
+  parseHighlightsReply,
   parseModelReply,
   parseSummaryReply,
   SUMMARY_SYSTEM,
@@ -27,7 +32,7 @@ export class OllamaBackend implements Backend {
 
   constructor(private cfg: OllamaConfig) {}
 
-  private async chat(system: string, user: string): Promise<string> {
+  private async chat(system: string, user: string, json = true): Promise<string> {
     const host = (this.cfg.host ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
     const doFetch = this.cfg.fetchImpl ?? fetch;
     const res = await doFetch(`${host}/api/chat`, {
@@ -36,8 +41,8 @@ export class OllamaBackend implements Backend {
       body: JSON.stringify({
         model: this.cfg.model,
         stream: false,
-        options: { temperature: 0 },
-        format: 'json',
+        options: { temperature: json ? 0 : 0.3 },
+        ...(json ? { format: 'json' } : {}),
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -55,5 +60,13 @@ export class OllamaBackend implements Backend {
 
   async summarize(digest: Digest): Promise<VideoSummary> {
     return parseSummaryReply(await this.chat(SUMMARY_SYSTEM, buildSummaryPrompt(digest)));
+  }
+
+  async answer(ctx: AnswerContext): Promise<string> {
+    return (await this.chat(ANSWER_SYSTEM, buildAnswerPrompt(ctx.digest, ctx.summary, ctx.question), false)).trim();
+  }
+
+  async highlights(digest: Digest): Promise<VideoHighlights> {
+    return parseHighlightsReply(await this.chat(HIGHLIGHTS_SYSTEM, buildHighlightsPrompt(digest)));
   }
 }

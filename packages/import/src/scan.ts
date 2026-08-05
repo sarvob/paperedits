@@ -66,6 +66,28 @@ async function sceneCuts(input: string): Promise<number[]> {
   return [...new Set(cuts)].sort((a, b) => a - b);
 }
 
+/**
+ * Per-second audio loudness curve in [0,1] via ffmpeg astats (RMS per 1-second
+ * window). Decodes audio only — fast even for long files. Used to draw the
+ * audio track in the timeline.
+ */
+export async function audioLevels(input: string): Promise<number[]> {
+  const { stdout } = await exec('ffmpeg', [
+    '-i', input,
+    '-map', 'a:0',
+    '-af', 'aresample=8000,asetnsamples=n=8000,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-',
+    '-f', 'null', '-',
+  ]).catch(() => ({ stdout: '' }));
+
+  const levels: number[] = [];
+  for (const m of stdout.matchAll(/RMS_level=(-?[\d.]+|-inf)/g)) {
+    const db = m[1] === '-inf' ? -90 : Number(m[1]);
+    // Map -60 dB (silence) .. 0 dB (full scale) → 0..1
+    levels.push(Math.max(0, Math.min(1, 1 + db / 60)));
+  }
+  return levels;
+}
+
 /** True if the file has at least one audio stream. */
 export async function hasAudioStream(input: string): Promise<boolean> {
   const { stdout } = await exec('ffprobe', [

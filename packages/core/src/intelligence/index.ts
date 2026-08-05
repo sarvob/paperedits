@@ -1,5 +1,5 @@
 import type { ReadTools } from '../tools/read.js';
-import type { Digest, Edl, Patch, VideoSummary } from '../types.js';
+import type { Digest, Edl, Patch, VideoHighlights, VideoSummary } from '../types.js';
 
 /** One prior instruction and the interpretation we derived from it. */
 export interface HistoryEntry {
@@ -34,8 +34,22 @@ export interface Backend {
   plan(ctx: PlanContext): Promise<Patch>;
   /** overview + per-moment one-liners from the digest (optional per backend) */
   summarize?(digest: Digest): Promise<VideoSummary>;
+  /** answer a question about the video (chat, not an edit) */
+  answer?(ctx: AnswerContext): Promise<string>;
+  /** ranked key moments with reasons (which segments matter and why) */
+  highlights?(digest: Digest): Promise<VideoHighlights>;
+}
+
+/** Context for a Q&A turn (a question, not an edit request). */
+export interface AnswerContext {
+  digest: Digest;
+  summary?: string;
+  question: string;
+  history: HistoryEntry[];
 }
 
 export { HeuristicBackend } from './heuristic.js';
 export { OllamaBackend } from './ollama.js';
 export { RemoteBackend } from './remote.js';
+export { CascadeBackend } from './cascade.js';
+export { AnthropicBackend } from './anthropic.js';

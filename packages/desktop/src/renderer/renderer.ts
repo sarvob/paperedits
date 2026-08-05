@@ -8,7 +8,10 @@ interface Snapshot {
   timeline: string[];
   sourcePath: string | null;
   mediaUrl: string | null;
+  audioLevels: number[];
+  activityPerSec: number[];
 }
+interface Highlight { id: string; title: string; why: string; score: number; start: number; end: number }
 interface Check { name: string; ok: boolean; required: boolean; detail: string }
 interface PveApi {
   systemCheck(): Promise<{ lines: Check[] }>;
@@ -22,8 +25,11 @@ interface PveApi {
   redo(): Promise<Snapshot | null>;
   setSpeed(id: string, speed: number): Promise<Snapshot | null>;
   outbound(i: string): Promise<{ network: boolean; text: string }>;
+  chat(message: string): Promise<{ ok: boolean; kind?: 'edit' | 'answer'; text?: string; usedFallback?: boolean; error?: string } & Partial<Snapshot>>;
+  ollamaModels(): Promise<{ ok: boolean; models: string[] }>;
   setBackend(kind: string, config: unknown): Promise<{ ok: boolean; name?: string; network?: boolean; error?: string }>;
   summarize(force?: boolean): Promise<{ summary: string; moments: { id: string; label: string }[]; error?: string } | null>;
+  highlights(force?: boolean): Promise<{ highlights: Highlight[]; source?: string; error?: string } | null>;
   addOverlay(o: unknown): Promise<Snapshot | null>;
   updateOverlay(id: string, patch: unknown, label: string): Promise<Snapshot | null>;
   removeOverlay(id: string): Promise<Snapshot | null>;
@@ -40,6 +46,9 @@ const EMOJIS = ['🔥', '✨', '✅', '👉', '❤️', '😂', '🎯', '⭐'];
 let current: Snapshot | null = null;
 let selectedOverlay: string | null = null;
 let momentLabels = new Map<string, string>(); // candidateId → one-line summary
+let currentHighlights: Highlight[] = []; // ranked key moments
+let zoomFactor = 1; // 1 = fit; ×2 per zoom-in step
+let lastPps = 1; // px per output-second at the current zoom (set by renderTracks)
 
 // ---- output-timeline math (mirrors @pve/core outputSpans) ------------------
 interface SpanItem { id: string; kind: 'segment' | 'card'; outStart: number; outEnd: number; seg?: SegmentEntry }
@@ -162,6 +171,16 @@ function paintPlayhead() {
   const total = totalDur();
   ($('scrub') as HTMLInputElement).value = String(total ? (playhead / total) * 1000 : 0);
   $('tc').textContent = `${fmt(playhead)} / ${fmt(total)}`;
+  // The single vertical bar that cuts across all tracks.
+  const px = playhead * lastPps;
+  $('playheadLine').style.left = `${px}px`;
+  // Keep the playhead visible while playing (auto-scroll the track view).
+  if (playing) {
+    const tracks = $('tracks');
+    if (px < tracks.scrollLeft || px > tracks.scrollLeft + tracks.clientWidth - 40) {
+      tracks.scrollLeft = Math.max(0, px - tracks.clientWidth / 2);
+    }
+  }
   updateOverlayVisibility();
 }
 
@@ -228,16 +247,16 @@ function selectOverlay(id: string | null) {
 function renderOverlayTrack(s: Snapshot) {
   const track = $('overlayTrack');
   track.innerHTML = '';
-  const { items, total } = computeSpans(s.edl);
+  const { items } = computeSpans(s.edl);
   for (const ov of s.edl.overlays) {
     const w = overlaySpan(s.edl, ov, items);
-    if (!w || !total) continue;
+    if (!w) continue;
     const pill = document.createElement('div');
     pill.className = `ov-pill${ov.id === selectedOverlay ? ' selected' : ''}`;
-    pill.style.left = `${(w.start / total) * 100}%`;
-    pill.style.width = `${Math.max(3, ((w.end - w.start) / total) * 100)}%`;
+    pill.style.left = `${w.start * lastPps}px`;
+    pill.style.width = `${Math.max(14, (w.end - w.start) * lastPps)}px`;
     pill.textContent = ov.kind === 'emoji' ? ov.content : ov.content.slice(0, 14);
-    pill.onclick = () => { selectOverlay(ov.id); seek(w.start + 0.05); };
+    pill.onclick = (ev) => { ev.stopPropagation(); selectOverlay(ov.id); seek(w.start + 0.05); };
     track.appendChild(pill);
   }
 }
@@ -293,22 +312,91 @@ async function addEmojiOverlay(emoji: string) {
 function selectNewest(s: Snapshot) { selectedOverlay = s.edl.overlays[s.edl.overlays.length - 1]?.id ?? null; }
 
 // ---- timeline / edl / history / checks ------------------------------------
-function renderTimeline(s: Snapshot) {
-  const tl = $('timeline');
-  tl.innerHTML = '';
-  const totalSource = s.edl.entries.reduce((a, e) => a + (e.kind === 'segment' ? e.sourceEnd - e.sourceStart : 2), 0);
-  for (const e of s.edl.entries) {
-    const div = document.createElement('div');
-    if (e.kind === 'card') { div.className = 'block card'; div.innerHTML = `<span class="lbl">▤</span>`; }
-    else {
-      const span = e.sourceEnd - e.sourceStart;
-      div.className = `block ${e.class === 'key' ? 'key' : 'fast'}`;
-      div.style.flex = String(span / totalSource);
-      div.innerHTML = `<span class="spd">${e.speed}×</span>${e.pinned ? '<span class="pin">📌</span>' : ''}<span class="lbl">${e.label ? escapeHtml(e.label) : ''}</span>`;
-    }
-    tl.appendChild(div);
+/** Pick a "nice" ruler step so ticks land every ~90px. */
+function niceStep(rough: number): number {
+  const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200];
+  return steps.find((s) => s >= rough) ?? 1800;
+}
+
+/**
+ * Render the aligned track stack — ruler, clips, audio, overlays — all sharing
+ * one horizontal time scale (px/sec), with a single playhead line cutting
+ * across every track. Zoom widens the scale so clip contents become legible.
+ */
+function renderTracks(s: Snapshot) {
+  const { items, total } = computeSpans(s.edl);
+  const containerW = $('tracks').clientWidth || 800;
+  const pps = (containerW / Math.max(0.001, total)) * zoomFactor;
+  lastPps = pps;
+  const W = Math.max(containerW, Math.ceil(total * pps));
+  const inner = $('tracksInner');
+  inner.style.width = `${W}px`;
+
+  // Ruler
+  const ruler = $('ruler');
+  ruler.innerHTML = '';
+  const step = niceStep(90 / pps);
+  for (let t = 0; t <= total; t += step) {
+    const tick = document.createElement('div');
+    tick.className = 'tick';
+    tick.style.left = `${t * pps}px`;
+    tick.textContent = fmt(t);
+    ruler.appendChild(tick);
   }
-  $('ruler').innerHTML = `<span>0:00</span><span>${fmt(totalDur())}</span>`;
+
+  // Clips (★ ring on LLM-ranked highlights)
+  const clips = $('trackClips');
+  clips.innerHTML = '';
+  const hlIds = new Set(currentHighlights.map((h) => h.id));
+  for (const it of items) {
+    const e = s.edl.entries.find((x) => x.id === it.id)!;
+    const div = document.createElement('div');
+    div.style.left = `${it.outStart * pps}px`;
+    div.style.width = `${Math.max(3, (it.outEnd - it.outStart) * pps - 1)}px`;
+    if (e.kind === 'card') {
+      div.className = 'clip card';
+      div.innerHTML = `<span class="c-lbl">▤ ${escapeHtml(e.text)}</span>`;
+    } else {
+      div.className = `clip ${e.class === 'key' ? 'key' : 'fast'}${hlIds.has(e.candidateId) ? ' hl' : ''}`;
+      const moment = momentLabels.get(e.candidateId) || e.label || '';
+      div.innerHTML =
+        `<span class="c-spd">${e.speed}×${e.pinned ? ' 📌' : ''}</span>` +
+        `<span class="c-lbl">${escapeHtml(moment)}</span>`;
+      div.title = `${fmt(e.sourceStart)}–${fmt(e.sourceEnd)} · ${e.class} · ${e.speed}×${moment ? ` · ${moment}` : ''}`;
+    }
+    div.onclick = (ev) => { ev.stopPropagation(); stop(); seek(it.outStart + 0.05); };
+    clips.appendChild(div);
+  }
+
+  // Audio track — per-pixel loudness sampled through the edit (output time →
+  // source time via each segment's speed), so it stays aligned with the clips.
+  const cv = $('trackAudio') as HTMLCanvasElement;
+  cv.width = W;
+  cv.style.width = `${W}px`;
+  const ctx = cv.getContext('2d')!;
+  ctx.clearRect(0, 0, W, 26);
+  ctx.fillStyle = 'rgba(91,140,255,0.75)';
+  const levels = s.audioLevels?.length ? s.audioLevels : null;
+  let idx = 0;
+  for (let x = 0; x < W; x += 2) {
+    const outT = x / pps;
+    while (idx < items.length - 1 && outT >= items[idx]!.outEnd) idx++;
+    const it = items[idx];
+    let lvl = 0;
+    if (it && outT >= it.outStart && outT < it.outEnd) {
+      if (it.seg) {
+        const src = it.seg.sourceStart + (outT - it.outStart) * it.seg.speed;
+        lvl = levels ? (levels[Math.floor(src)] ?? 0) : (s.activityPerSec[Math.floor(src)] ?? 0) * 0.6;
+      } else {
+        lvl = 0.12; // card: near-silent bed
+      }
+    }
+    const h = Math.max(1, lvl * 22);
+    ctx.fillRect(x, 13 - h / 2, 1.5, h);
+  }
+
+  renderOverlayTrack(s);
+  paintPlayhead();
 }
 function renderEdl(s: Snapshot) {
   const wrap = $('edl');
@@ -344,6 +432,43 @@ function renderEdl(s: Snapshot) {
   });
 }
 
+/** Fetch + render the LLM-ranked key moments (which segments matter and why). */
+async function requestHighlights(force = false) {
+  $('hlSrc').textContent = 'ranking…';
+  const res = await pve.highlights(force);
+  if (!res) return;
+  currentHighlights = res.highlights || [];
+  $('hlSrc').textContent = res.error ? `(${res.error.slice(0, 60)})` : `via ${res.source ?? 'heuristic'}`;
+  renderHighlights();
+  if (current) renderTracks(current); // repaint ★ rings on clips
+}
+
+function renderHighlights() {
+  const el = $('highlights');
+  el.innerHTML = '';
+  if (!currentHighlights.length) {
+    el.innerHTML = '<span class="muted-note">No highlights identified yet.</span>';
+    return;
+  }
+  currentHighlights.forEach((h, i) => {
+    const card = document.createElement('div');
+    card.className = 'hl-card';
+    card.innerHTML =
+      `<span class="hl-rank">#${i + 1}</span>` +
+      `<span class="hl-time">${fmt(h.start)}</span>` +
+      `<span class="hl-title">${escapeHtml(h.title)}</span>` +
+      `<span class="hl-why">${escapeHtml(h.why)}</span>`;
+    card.onclick = () => {
+      if (!current) return;
+      const seg = current.edl.entries.find((e) => e.kind === 'segment' && e.candidateId === h.id);
+      const sp = seg && computeSpans(current.edl).items.find((x) => x.id === seg.id);
+      stop();
+      seek(sp ? sp.outStart + 0.05 : 0);
+    };
+    el.appendChild(card);
+  });
+}
+
 async function requestSummary(force = false) {
   $('summary').hidden = false;
   const textEl = $('summaryText');
@@ -361,7 +486,10 @@ async function requestSummary(force = false) {
   if (current) renderEdl(current);
 }
 function renderHistory(s: Snapshot) {
-  $('history').innerHTML = s.timeline.map((t, i) => `<li class="${i === s.timeline.length - 1 ? 'current' : ''}">${escapeHtml(t)}</li>`).join('');
+  // Defensive: a missing panel must never break the apply() chain.
+  const el = document.getElementById('history');
+  if (!el) return;
+  el.innerHTML = s.timeline.map((t, i) => `<li class="${i === s.timeline.length - 1 ? 'current' : ''}">${escapeHtml(t)}</li>`).join('');
 }
 
 // ---- apply a snapshot ------------------------------------------------------
@@ -374,9 +502,8 @@ function apply(s: Snapshot, opts: { keepPlayhead?: boolean } = {}) {
   const v = video();
   if (s.mediaUrl && v.getAttribute('src') !== s.mediaUrl) { v.setAttribute('src', s.mediaUrl); }
   if (!opts.keepPlayhead) playhead = 0;
-  renderTimeline(s);
+  renderTracks(s);
   renderOverlayLayer(s);
-  renderOverlayTrack(s);
   renderOverlayPanel(s);
   renderEdl(s);
   renderHistory(s);
@@ -429,20 +556,38 @@ async function importPath(path: string) {
   startPaintLoop();
   $('outbound').textContent = (res as Snapshot).digestText || '';
   toast(`Imported ${path.split('/').pop()}`);
-  // Generate the summary + per-moment labels (whisper transcript → LLM/heuristic).
+  // Generate the summary, per-moment labels, and ranked highlights.
+  currentHighlights = [];
+  renderHighlights();
   requestSummary();
+  requestHighlights();
 }
-async function applyInstruction() {
-  const input = $('cmd') as HTMLInputElement;
+// ---- chat -----------------------------------------------------------------
+function addMsg(cls: string, text: string): HTMLElement {
+  const el = document.createElement('div');
+  el.className = `msg ${cls}`;
+  el.textContent = text;
+  $('chatLog').appendChild(el);
+  $('chatLog').scrollTop = $('chatLog').scrollHeight;
+  return el;
+}
+async function sendChat() {
+  const input = $('chatInput') as HTMLInputElement;
   const text = input.value.trim();
-  if (!text || !current) return;
-  const res = await pve.prompt(text);
-  const interp = $('interpretation');
-  if (!res.ok) { interp.className = 'interpretation err'; interp.textContent = res.rejected ? `Rejected: ${(res.errors || []).join('; ')}` : (res as { error?: string }).error || 'failed'; return; }
-  interp.className = 'interpretation';
-  interp.textContent = `→ ${res.interpretation}`;
+  if (!text) return;
+  if (!current) { addMsg('bot err', 'Import a video first.'); return; }
+  addMsg('user', text);
   input.value = '';
-  apply(res as Snapshot, { keepPlayhead: true });
+  const thinking = addMsg('bot thinking', 'thinking…');
+  const res = await pve.chat(text);
+  thinking.remove();
+  if (!res || !res.ok) { addMsg('bot err', (res as { error?: string })?.error || 'something went wrong'); return; }
+  if (res.kind === 'edit') {
+    addMsg('bot edit', `✓ ${res.text}${res.usedFallback ? '  (heuristic)' : ''}`);
+    apply(res as unknown as Snapshot, { keepPlayhead: true });
+  } else {
+    addMsg('bot', res.text || '(no answer)');
+  }
 }
 
 /** Rasterize one overlay to a transparent PNG data URL via canvas (no freetype). */
@@ -510,9 +655,9 @@ function escapeHtml(s: string) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&am
 
 // ---- wire up --------------------------------------------------------------
 $('openBtn').onclick = async () => { const p = await pve.openFile(); if (p) importPath(p); };
-$('applyBtn').onclick = applyInstruction;
-$('cmd').addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Enter') applyInstruction(); });
-$('cmd').addEventListener('input', (e) => refreshOutbound((e.target as HTMLInputElement).value));
+$('chatSend').onclick = sendChat;
+$('chatInput').addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Enter') sendChat(); });
+$('chatInput').addEventListener('input', (e) => refreshOutbound((e.target as HTMLInputElement).value));
 $('undoBtn').onclick = async () => { const s = await pve.undo(); if (s) apply(s, { keepPlayhead: true }); };
 $('redoBtn').onclick = async () => { const s = await pve.redo(); if (s) apply(s, { keepPlayhead: true }); };
 $('exportBtn').onclick = doExport;
@@ -522,6 +667,16 @@ $('importErrorDismiss').onclick = () => {
 };
 $('playBtn').onclick = playPause;
 $('summaryRefresh').onclick = () => requestSummary(true);
+$('hlRefresh').onclick = () => requestHighlights(true);
+// Click anywhere on the tracks → seek there (the playhead follows).
+$('tracksInner').addEventListener('mousedown', (e) => {
+  const rect = $('tracksInner').getBoundingClientRect();
+  stop();
+  seek(((e as MouseEvent).clientX - rect.left) / lastPps);
+});
+$('zoomIn').onclick = () => { zoomFactor = Math.min(32, zoomFactor * 2); if (current) renderTracks(current); };
+$('zoomOut').onclick = () => { zoomFactor = Math.max(1, zoomFactor / 2); if (current) renderTracks(current); };
+$('zoomFit').onclick = () => { zoomFactor = 1; if (current) renderTracks(current); };
 $('scrub').addEventListener('input', (e) => { stop(); seek((Number((e.target as HTMLInputElement).value) / 1000) * totalDur()); });
 $('addText').onclick = addTextOverlay;
 $('stage').addEventListener('mousedown', (e) => { const id = (e.target as HTMLElement).id; if (id === 'previewCanvas' || id === 'overlayLayer') selectOverlay(null); });
@@ -529,15 +684,55 @@ $('stage').addEventListener('mousedown', (e) => { const id = (e.target as HTMLEl
 for (const ev of ['seeked', 'loadeddata', 'canplay']) video().addEventListener(ev, drawFrame);
 
 // ---- backend selector ------------------------------------------------------
+let modelsLoaded = false;
+async function loadOllamaModels() {
+  const picker = $('modelPicker');
+  const { ok, models } = await pve.ollamaModels();
+  if (!ok || !models.length) {
+    picker.innerHTML = '<span style="font-size:11px;color:var(--muted)">No Ollama models found. Run e.g. <code>ollama pull llama3.2:3b</code></span>';
+    return;
+  }
+  picker.innerHTML = '';
+  models.forEach((m) => {
+    const label = document.createElement('label');
+    label.innerHTML = `<input type="checkbox" value="${m}" ${m.includes('llama3.2:3b') ? 'checked' : ''} /> <span>${escapeHtml(m)}</span><span class="ord"></span>`;
+    label.querySelector('input')!.addEventListener('change', updateModelOrder);
+    picker.appendChild(label);
+  });
+  updateModelOrder();
+  modelsLoaded = true;
+}
+function checkedModels(): string[] {
+  return [...document.querySelectorAll<HTMLInputElement>('#modelPicker input:checked')].map((i) => i.value);
+}
+function updateModelOrder() {
+  const checked = checkedModels();
+  document.querySelectorAll<HTMLElement>('#modelPicker label').forEach((l) => {
+    const v = l.querySelector('input')!.value;
+    const idx = checked.indexOf(v);
+    l.querySelector('.ord')!.textContent = idx >= 0 && checked.length > 1 ? `#${idx + 1}` : '';
+  });
+}
 $('backendSel').addEventListener('change', () => {
   const kind = ($('backendSel') as HTMLSelectElement).value;
   $('ollamaCfg').hidden = kind !== 'ollama';
+  $('anthropicCfg').hidden = kind !== 'anthropic';
   $('remoteCfg').hidden = kind !== 'remote';
+  if (kind === 'ollama' && !modelsLoaded) loadOllamaModels();
 });
 $('applyBackend').onclick = async () => {
   const kind = ($('backendSel') as HTMLSelectElement).value;
-  const config: Record<string, string> = {};
-  if (kind === 'ollama') config.model = ($('ollamaModel') as HTMLInputElement).value.trim();
+  const config: Record<string, unknown> = {};
+  if (kind === 'ollama') {
+    const models = checkedModels();
+    if (!models.length) return toast('select at least one model', true);
+    config.models = models;
+  }
+  if (kind === 'anthropic') {
+    config.model = ($('anthropicModel') as HTMLSelectElement).value;
+    config.apiKey = ($('anthropicKey') as HTMLInputElement).value.trim();
+    if (!config.apiKey) return toast('enter your Anthropic API key', true);
+  }
   if (kind === 'remote') {
     config.apiBase = ($('remoteBase') as HTMLInputElement).value.trim();
     config.model = ($('remoteModel') as HTMLInputElement).value.trim();
@@ -546,11 +741,12 @@ $('applyBackend').onclick = async () => {
   const r = await pve.setBackend(kind, config);
   if (!r.ok) return toast(r.error || 'could not set backend', true);
   const scope = r.network ? 'remote' : 'local';
+  const detail = kind === 'ollama' && checkedModels().length > 1 ? `cascade: ${checkedModels().join(' → ')}` : r.name;
   $('backendStatus').className = `be-status${r.network ? ' net' : ''}`;
-  $('backendStatus').textContent = `Active: ${r.name} (${scope})`;
+  $('backendStatus').textContent = `Active: ${detail} (${scope})`;
   const badge = document.querySelector('.brand .mode');
   if (badge) badge.textContent = `${scope} · ${r.name}`;
-  toast(`Backend: ${r.name}`);
+  toast(`Backend: ${detail}`);
 };
 
 (async () => {

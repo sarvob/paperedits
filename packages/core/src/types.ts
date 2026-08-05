@@ -48,6 +48,8 @@ export interface Analysis {
   words: Word[];
   /** per-second activity score in [0,1] from the container scan (no decode) */
   activityPerSec: number[];
+  /** per-second audio loudness in [0,1] (RMS), for the audio track UI */
+  audioLevels?: number[];
   /** scene-cut candidate times (seconds), from packet/I-frame analysis */
   sceneCuts: number[];
   detections: Detection[];
@@ -119,6 +121,22 @@ export interface Digest {
 export interface VideoSummary {
   summary: string;
   moments: { id: string; label: string }[];
+}
+
+/**
+ * Ranked key moments: which segments actually matter and WHY — produced by an
+ * LLM (or an activity heuristic as fallback). Distinct from `moments`, which
+ * labels every segment in order; highlights select and rank the important ones.
+ */
+export interface VideoHighlights {
+  highlights: {
+    id: string;
+    title: string;
+    /** one sentence on why this moment matters */
+    why: string;
+    /** importance 0..1, used for ranking */
+    score: number;
+  }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +263,8 @@ export interface Patch {
   ops: MutatingOp[];
   /** parsed interpretation shown back to the user above the EDL */
   interpretation: string;
+  /** model self-reported confidence 0..1 (drives the cheap→capable cascade) */
+  confidence?: number;
 }
 
 export interface ValidationError {

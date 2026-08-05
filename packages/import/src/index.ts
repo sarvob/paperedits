@@ -4,10 +4,10 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import type { Analysis, AnalysisCache, Importer, ImportOptions, Word } from '@pve/core';
-import { hasAudioStream, scanContainer } from './scan.js';
+import { audioLevels, hasAudioStream, scanContainer } from './scan.js';
 import { transcribe, type WhisperConfig } from './transcribe.js';
 
-export { scanContainer, hasAudioStream } from './scan.js';
+export { scanContainer, hasAudioStream, audioLevels } from './scan.js';
 export { transcribe, findModel, DEFAULT_MODEL_NAMES } from './transcribe.js';
 export { renderToFile, hasDrawtext, type RenderResult } from './render-exec.js';
 export { runSystemChecks } from './system-checks.js';
@@ -76,9 +76,11 @@ export class FfmpegImporter implements Importer {
     // for whisper would fail, so detect and skip transcription cleanly.
     const audio = await hasAudioStream(path);
     let words: Word[] = [];
+    let levels: number[] = [];
     if (audio) {
       opts.onProgress?.('transcribe', 30);
-      words = await transcribe(path, this.cfg.whisper);
+      // Loudness curve (fast) + transcript (slow) in parallel.
+      [levels, words] = await Promise.all([audioLevels(path), transcribe(path, this.cfg.whisper)]);
     }
 
     opts.onProgress?.('segment', 90);
@@ -87,6 +89,7 @@ export class FfmpegImporter implements Importer {
       durationSec: scan.durationSec,
       hasAudio: audio,
       words,
+      audioLevels: levels,
       activityPerSec: scan.activityPerSec,
       sceneCuts: scan.sceneCuts,
       detections: [], // P1: sparse visual pass (YOLOX)
