@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+    />
+    <title>Prompt Video Editor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">▶ Prompt Video Editor <span class="mode">local · heuristic</span></div>
+      <div class="file" id="fileName">no file</div>
+      <div class="actions">
+        <button id="openBtn">Open video…</button>
+        <button id="sampleBtn" hidden>Load sample</button>
+        <button id="undoBtn" disabled title="Undo">↶</button>
+        <button id="redoBtn" disabled title="Redo">↷</button>
+        <button id="exportBtn" class="primary" disabled>Export</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="editor">
+        <div class="empty" id="emptyState">
+          <p>Import a recording to begin.</p>
+          <p class="hint">Everything stays on your machine. Nothing is uploaded.</p>
+        </div>
+
+        <div id="workspace" hidden>
+          <div class="timeline-wrap">
+            <div class="timeline" id="timeline"></div>
+            <div class="ruler" id="ruler"></div>
+          </div>
+
+          <div class="edl" id="edl"></div>
+
+          <div class="commandbar">
+            <input
+              id="cmd"
+              type="text"
+              placeholder="Tell the editor what to do — e.g. “key parts 1x, rest 10x, label the fast parts”"
+              autocomplete="off"
+            />
+            <button id="applyBtn" class="primary">Apply</button>
+          </div>
+          <div class="interpretation" id="interpretation"></div>
+        </div>
+      </section>
+
+      <aside class="sidebar">
+        <div class="panel">
+          <h3>🔒 What leaves the machine</h3>
+          <div class="outbound-status" id="outboundStatus">Local mode — 0 bytes leave.</div>
+          <pre class="outbound" id="outbound">Type an instruction to preview the digest text a remote backend would send.</pre>
+        </div>
+
+        <div class="panel">
+          <h3>System</h3>
+          <ul class="checks" id="checks"></ul>
+        </div>
+
+        <div class="panel">
+          <h3>History</h3>
+          <ol class="history" id="history"></ol>
+        </div>
+      </aside>
+    </main>
+
+    <div class="toast" id="toast" hidden></div>
+    <script src="renderer.js"></script>
+  </body>
+</html>

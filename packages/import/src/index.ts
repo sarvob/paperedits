@@ -10,6 +10,7 @@ import { transcribe, type WhisperConfig } from './transcribe.js';
 export { scanContainer } from './scan.js';
 export { transcribe, findModel, DEFAULT_MODEL_NAMES } from './transcribe.js';
 export { renderToFile, hasDrawtext, type RenderResult } from './render-exec.js';
+export { runSystemChecks } from './system-checks.js';
 
 /** Disk cache keyed by file hash, so re-import of a known file is instant. */
 export class FileAnalysisCache implements AnalysisCache {

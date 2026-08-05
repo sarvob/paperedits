@@ -1,0 +1,21 @@
+{
+  "name": "@pve/desktop",
+  "version": "0.0.1",
+  "description": "Electron desktop shell: timeline, command bar, outbound-review pane.",
+  "license": "MIT",
+  "private": true,
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "npm run build && electron .",
+    "dev": "npm run build && electron ."
+  },
+  "dependencies": {
+    "@pve/core": "*",
+    "@pve/import": "*"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "esbuild": "^0.24.0"
+  }
+}
