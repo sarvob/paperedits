@@ -14,6 +14,7 @@ interface PveApi {
   systemCheck(): Promise<{ lines: Check[] }>;
   openFile(): Promise<string | null>;
   samplePath(): Promise<string | null>;
+  initialFile(): Promise<string | null>;
   import(path: string): Promise<{ ok: boolean; error?: string } & Partial<Snapshot>>;
   onImportProgress(cb: (p: { stage: string; pct: number }) => void): () => void;
   prompt(i: string): Promise<{ ok: boolean; rejected?: boolean; errors?: string[]; interpretation?: string } & Partial<Snapshot>>;
@@ -527,4 +528,7 @@ $('applyBackend').onclick = async () => {
   for (const em of EMOJIS) { const b = document.createElement('button'); b.textContent = em; b.onclick = () => addEmojiOverlay(em); emojiRow.appendChild(b); }
   const sample = await pve.samplePath();
   if (sample) { const btn = $('sampleBtn') as HTMLButtonElement; btn.hidden = false; btn.onclick = () => importPath(sample); }
+  // Auto-import a file passed on the command line (open-with / drag-to-dock).
+  const initial = await pve.initialFile();
+  if (initial) importPath(initial);
 })();

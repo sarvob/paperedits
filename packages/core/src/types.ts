@@ -42,7 +42,9 @@ export interface Analysis {
   /** content hash of the source file — the cache key for the whole pipeline */
   fileHash: string;
   durationSec: number;
-  /** word-level transcript */
+  /** whether the source has an audio stream (screen recordings often don't) */
+  hasAudio: boolean;
+  /** word-level transcript (empty when there is no audio) */
   words: Word[];
   /** per-second activity score in [0,1] from the container scan (no decode) */
   activityPerSec: number[];
@@ -66,7 +68,7 @@ export interface Atom {
   start: number;
   end: number;
   /** why this boundary exists — useful for debugging segmentation */
-  reason: 'silence' | 'sentence' | 'scene' | 'start' | 'end';
+  reason: 'silence' | 'sentence' | 'scene' | 'start' | 'end' | 'interval';
 }
 
 /**

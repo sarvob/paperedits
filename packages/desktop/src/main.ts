@@ -234,6 +234,7 @@ ipcMain.handle('session:export', async (_e, outPath: string | null, overlayPngDa
       output: out,
       quality: 'match',
       encoder: 'videotoolbox',
+      hasAudio: session.analysis.hasAudio,
       overlayPngs,
       onWarn: (w) => (warn = w),
     });
@@ -247,6 +248,12 @@ ipcMain.handle('session:export', async (_e, outPath: string | null, overlayPngDa
 ipcMain.handle('sample:path', async () => {
   const p = join(process.cwd(), 'samples', 'buildlog.mp4');
   return existsSync(p) ? p : null;
+});
+
+/** A video path passed on the command line (open-with / drag-to-dock) auto-imports. */
+ipcMain.handle('initial:file', async () => {
+  const arg = process.argv.find((a) => /\.(mp4|mov|mkv|webm|m4v|avi)$/i.test(a) && existsSync(a));
+  return arg ?? null;
 });
 
 const MIME: Record<string, string> = {

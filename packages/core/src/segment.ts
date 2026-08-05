@@ -51,6 +51,25 @@ export function buildAtoms(analysis: Analysis, cfg: SegmentConfig = DEFAULT_SEGM
 
   marks.sort((a, b) => a.at - b.at);
 
+  // Fallback for unstructured video (e.g. a silent screen recording with no
+  // speech and no scene cuts): fill any long gap between boundaries with regular
+  // interval marks, so the timeline is chopped into editable pieces instead of
+  // one giant block. Only triggers on genuinely long gaps.
+  const INTERVAL = 15; // seconds
+  const withIntervals: typeof marks = [];
+  for (let i = 0; i < marks.length; i++) {
+    withIntervals.push(marks[i]!);
+    const next = marks[i + 1];
+    if (next && next.at - marks[i]!.at > INTERVAL * 1.5) {
+      for (let t = marks[i]!.at + INTERVAL; t < next.at - INTERVAL * 0.5; t += INTERVAL) {
+        withIntervals.push({ at: Number(t.toFixed(2)), reason: 'interval' });
+      }
+    }
+  }
+  withIntervals.sort((a, b) => a.at - b.at);
+  marks.length = 0;
+  marks.push(...withIntervals);
+
   // Turn sorted marks into [start,end) atoms, dropping zero-length spans.
   const raw: Atom[] = [];
   for (let i = 0; i < marks.length - 1; i++) {
@@ -119,9 +138,12 @@ export function buildCandidates(
       continue;
     }
     const spanStart = current[0]!.start;
+    // The boundary at `atom.start` is the END reason of the previous atom.
+    const boundaryReason = current[current.length - 1]!.reason;
     const wouldBeLong = atom.end - spanStart > cfg.maxCandidateSec;
-    const sceneBreak = isSceneJoin(atom.start);
-    const silenceBreak = atom.reason === 'silence';
+    const sceneBreak = isSceneJoin(atom.start) || boundaryReason === 'scene';
+    // Silence, and interval marks (unstructured-video fallback), end a candidate.
+    const silenceBreak = boundaryReason === 'silence' || boundaryReason === 'interval';
 
     if (wouldBeLong || sceneBreak || silenceBreak) {
       groups.push(current);

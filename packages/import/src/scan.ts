@@ -66,6 +66,18 @@ async function sceneCuts(input: string): Promise<number[]> {
   return [...new Set(cuts)].sort((a, b) => a - b);
 }
 
+/** True if the file has at least one audio stream. */
+export async function hasAudioStream(input: string): Promise<boolean> {
+  const { stdout } = await exec('ffprobe', [
+    '-v', 'error',
+    '-select_streams', 'a',
+    '-show_entries', 'stream=codec_type',
+    '-of', 'csv=p=0',
+    input,
+  ]).catch(() => ({ stdout: '' }));
+  return stdout.trim().length > 0;
+}
+
 export async function scanContainer(input: string): Promise<ContainerScan> {
   const durationSec = await probeDuration(input);
   const [activityPerSec, cuts] = await Promise.all([

@@ -144,6 +144,7 @@ async function main() {
               output: out,
               quality: 'match',
               encoder: 'videotoolbox',
+              hasAudio: session.analysis.hasAudio,
               onWarn: (w) => console.log(`   ⚠️  ${w}`),
             });
             console.log(`   ✓ ${r.output} — ${(r.bytes / 1e6).toFixed(1)} MB in ${r.seconds.toFixed(1)}s`);

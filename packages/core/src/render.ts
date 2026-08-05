@@ -28,6 +28,8 @@ export interface RenderOptions {
   encoder: 'videotoolbox' | 'nvenc' | 'qsv' | 'x264';
   /** overlay layer, composited over the cut via the `overlay` filter (no freetype) */
   overlays?: OverlayRenderSpec[];
+  /** does the source have audio? false → render video-only (no atempo/loudnorm) */
+  hasAudio?: boolean;
 }
 
 export const DEFAULT_RENDER: Omit<RenderOptions, 'input' | 'output'> = {
@@ -99,6 +101,7 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
     durationSec: e.kind === 'card' ? e.durationSec : 0,
   }));
   const overlays = opts.overlays ?? [];
+  const hasAudio = opts.hasAudio !== false;
 
   const vLabels: string[] = [];
   const aLabels: string[] = [];
@@ -112,25 +115,30 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
     );
     vLabels.push(`[v${i}]`);
 
-    // Audio: ALWAYS atempo to the segment speed so its duration matches the
-    // time-compressed video (otherwise concat pads to the longer stream). Very
-    // fast or explicitly-muted sections additionally get volume=0 — silenced,
-    // but still compressed to the right length.
-    const muted = s.speed > 3 || s.audio === 'mute';
-    filters.push(
-      `[0:a]atrim=start=${s.sourceStart.toFixed(3)}:duration=${dur},asetpts=PTS-STARTPTS,${atempoChain(s.speed)}${muted ? ',volume=0' : ''}[a${i}]`,
-    );
-    aLabels.push(`[a${i}]`);
+    if (hasAudio) {
+      // Audio: ALWAYS atempo to the segment speed so its duration matches the
+      // time-compressed video (otherwise concat pads to the longer stream). Very
+      // fast or explicitly-muted sections additionally get volume=0 — silenced,
+      // but still compressed to the right length.
+      const muted = s.speed > 3 || s.audio === 'mute';
+      filters.push(
+        `[0:a]atrim=start=${s.sourceStart.toFixed(3)}:duration=${dur},asetpts=PTS-STARTPTS,${atempoChain(s.speed)}${muted ? ',volume=0' : ''}[a${i}]`,
+      );
+      aLabels.push(`[a${i}]`);
+    }
   });
 
   const n = segs.length;
-  // concat requires streams INTERLEAVED per segment: [v0][a0][v1][a1]… — not all
-  // videos then all audios. Then normalize loudness INSIDE the graph, since a
-  // simple `-af loudnorm` cannot attach to a complex-filtergraph output.
-  const interleaved = vLabels.map((v, i) => `${v}${aLabels[i]}`).join('');
-  // If there are overlays, concat into an intermediate [basev] then composite.
   const baseLabel = overlays.length ? '[basev]' : '[outv]';
-  const concat = `${interleaved}concat=n=${n}:v=1:a=1${baseLabel}[araw]`;
+  let concat: string;
+  if (hasAudio) {
+    // Streams INTERLEAVED per segment: [v0][a0][v1][a1]… — not all v then all a.
+    const interleaved = vLabels.map((v, i) => `${v}${aLabels[i]}`).join('');
+    concat = `${interleaved}concat=n=${n}:v=1:a=1${baseLabel}[araw]`;
+  } else {
+    // Video-only source (e.g. a screen recording): concat video only.
+    concat = `${vLabels.join('')}concat=n=${n}:v=1:a=0${baseLabel}`;
+  }
 
   // Overlay layer: chain one `overlay` per PNG, gated to its output-time window.
   // x/y centre the PNG at the requested frame fraction (W,H = main; w,h = overlay).
@@ -146,8 +154,9 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
     cur = out;
   });
 
-  const loudnorm = `[araw]loudnorm[outa]`;
-  const filterComplex = [...filters, concat, ...overlayFilters, loudnorm].join(';');
+  // Loudness-normalize inside the graph (only when there's audio).
+  const audioChain = hasAudio ? [`[araw]loudnorm[outa]`] : [];
+  const filterComplex = [...filters, concat, ...overlayFilters, ...audioChain].join(';');
 
   const qualityFlags =
     opts.quality === 'match'
@@ -166,8 +175,7 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
     filterComplex,
     '-map',
     '[outv]',
-    '-map',
-    '[outa]',
+    ...(hasAudio ? ['-map', '[outa]'] : []),
     ...encoderFlags[opts.encoder],
     ...qualityFlags,
     opts.output,

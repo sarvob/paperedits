@@ -23,6 +23,7 @@ export function sampleAnalysis(): Analysis {
   return {
     fileHash: 'samplehash',
     durationSec,
+    hasAudio: true,
     words,
     activityPerSec: Array.from({ length: durationSec }, (_, s) => (s < 30 || s >= 75 ? 0.8 : 0.1)),
     sceneCuts: [30, 75],

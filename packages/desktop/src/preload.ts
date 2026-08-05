@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('pve', {
   systemCheck: () => ipcRenderer.invoke('system:check'),
   openFile: () => ipcRenderer.invoke('file:open'),
   samplePath: () => ipcRenderer.invoke('sample:path'),
+  initialFile: () => ipcRenderer.invoke('initial:file'),
   import: (path: string) => ipcRenderer.invoke('session:import', path),
   onImportProgress: (cb: ProgressCb) => {
     const listener = (_e: unknown, p: { stage: string; pct: number }) => cb(p);

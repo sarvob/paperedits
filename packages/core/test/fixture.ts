@@ -45,6 +45,7 @@ export function makeAnalysis(): Analysis {
   return {
     fileHash: 'testhash123',
     durationSec,
+    hasAudio: true,
     words,
     activityPerSec,
     sceneCuts: [30, 75],

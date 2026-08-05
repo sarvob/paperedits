@@ -3,11 +3,11 @@ import { createReadStream } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import type { Analysis, AnalysisCache, Importer, ImportOptions } from '@pve/core';
-import { scanContainer } from './scan.js';
+import type { Analysis, AnalysisCache, Importer, ImportOptions, Word } from '@pve/core';
+import { hasAudioStream, scanContainer } from './scan.js';
 import { transcribe, type WhisperConfig } from './transcribe.js';
 
-export { scanContainer } from './scan.js';
+export { scanContainer, hasAudioStream } from './scan.js';
 export { transcribe, findModel, DEFAULT_MODEL_NAMES } from './transcribe.js';
 export { renderToFile, hasDrawtext, type RenderResult } from './render-exec.js';
 export { runSystemChecks } from './system-checks.js';
@@ -72,13 +72,20 @@ export class FfmpegImporter implements Importer {
     opts.onProgress?.('scan', 5);
     const scan = await scanContainer(path);
 
-    opts.onProgress?.('transcribe', 30);
-    const words = await transcribe(path, this.cfg.whisper);
+    // Screen recordings and silent clips have no audio stream — extracting audio
+    // for whisper would fail, so detect and skip transcription cleanly.
+    const audio = await hasAudioStream(path);
+    let words: Word[] = [];
+    if (audio) {
+      opts.onProgress?.('transcribe', 30);
+      words = await transcribe(path, this.cfg.whisper);
+    }
 
     opts.onProgress?.('segment', 90);
     const analysis: Analysis = {
       fileHash,
       durationSec: scan.durationSec,
+      hasAudio: audio,
       words,
       activityPerSec: scan.activityPerSec,
       sceneCuts: scan.sceneCuts,
