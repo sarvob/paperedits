@@ -10,8 +10,11 @@ interface Snapshot {
   mediaUrl: string | null;
   audioLevels: number[];
   activityPerSec: number[];
+  agentPlan: PlanItem[] | null;
 }
 interface Highlight { id: string; title: string; why: string; score: number; start: number; end: number }
+interface PlanItem { id: string; speed: number; reason: string }
+interface ThumbInfo { dir: string; interval: number; count: number }
 interface Check { name: string; ok: boolean; required: boolean; detail: string }
 interface PveApi {
   systemCheck(): Promise<{ lines: Check[] }>;
@@ -29,6 +32,7 @@ interface PveApi {
   ollamaModels(): Promise<{ ok: boolean; models: string[] }>;
   setBackend(kind: string, config: unknown): Promise<{ ok: boolean; name?: string; network?: boolean; error?: string }>;
   currentBackend(): Promise<{ name: string; detail: string; network: boolean }>;
+  thumbsEnsure(): Promise<ThumbInfo | null>;
   summarize(force?: boolean): Promise<{ summary: string; moments: { id: string; label: string }[]; error?: string } | null>;
   highlights(force?: boolean): Promise<{ highlights: Highlight[]; source?: string; error?: string } | null>;
   addOverlay(o: unknown): Promise<Snapshot | null>;
@@ -48,8 +52,13 @@ let current: Snapshot | null = null;
 let selectedOverlay: string | null = null;
 let momentLabels = new Map<string, string>(); // candidateId → one-line summary
 let currentHighlights: Highlight[] = []; // ranked key moments
+let agentPlan: PlanItem[] = []; // per-segment agent decisions (plan track)
+let thumbs: ThumbInfo | null = null; // filmstrip thumbnails for the source
 let zoomFactor = 1; // 1 = fit; ×2 per zoom-in step
 let lastPps = 1; // px per output-second at the current zoom (set by renderTracks)
+
+const thumbUrl = (idx: number) =>
+  thumbs ? `pvemedia://local/${encodeURIComponent(`${thumbs.dir}/t${String(idx).padStart(4, '0')}.jpg`)}` : '';
 
 // ---- output-timeline math (mirrors @pve/core outputSpans) ------------------
 interface SpanItem { id: string; kind: 'segment' | 'card'; outStart: number; outEnd: number; seg?: SegmentEntry }
@@ -396,6 +405,60 @@ function renderTracks(s: Snapshot) {
     ctx.fillRect(x, 13 - h / 2, 1.5, h);
   }
 
+  // Filmstrip — whole frames only, side by side. Each slot is a fixed 96px so
+  // a frame is always fully visible; how much time one frame spans depends on
+  // zoom (shown in the caption). Slots map output-time → source-time through
+  // the edit, so the strip stays aligned with the clips above it.
+  const film = $('trackFilm');
+  film.innerHTML = '';
+  if (thumbs) {
+    const slotW = 96;
+    const slots = Math.floor(W / slotW);
+    let fIdx = 0;
+    for (let i = 0; i < slots; i++) {
+      const x = i * slotW;
+      const outT = (x + slotW / 2) / pps;
+      while (fIdx < items.length - 1 && outT >= items[fIdx]!.outEnd) fIdx++;
+      const it = items[fIdx];
+      if (!it || outT < it.outStart || outT >= it.outEnd || !it.seg) continue;
+      const src = it.seg.sourceStart + (outT - it.outStart) * it.seg.speed;
+      const idx = Math.min(thumbs.count, Math.max(1, Math.floor(src / thumbs.interval) + 1));
+      const img = document.createElement('img');
+      img.className = 'film-frame';
+      img.src = thumbUrl(idx);
+      img.loading = 'lazy';
+      img.style.left = `${x}px`;
+      img.title = `source ${fmt(src)}`;
+      film.appendChild(img);
+    }
+    const spanPerFrame = Math.max(1, Math.round(slotW / pps));
+    $('filmScale').textContent = `1 frame ≈ ${spanPerFrame}s of video · zoom + for more frames`;
+  } else {
+    $('filmScale').textContent = '';
+  }
+
+  // Agent plan track — the agent's per-segment decision (1× keep vs N× fast)
+  // with its reason. Appears under the audio track after a plan-producing edit.
+  const planTrack = $('trackPlan');
+  planTrack.innerHTML = '';
+  planTrack.hidden = agentPlan.length === 0;
+  if (agentPlan.length) {
+    const byCand = new Map(agentPlan.map((p) => [p.id, p]));
+    for (const it of items) {
+      if (!it.seg) continue;
+      const p = byCand.get(it.seg.candidateId);
+      if (!p) continue;
+      const div = document.createElement('div');
+      const w = Math.max(4, (it.outEnd - it.outStart) * pps - 2);
+      div.className = `plan-block ${p.speed === 1 ? 'plan-keep' : 'plan-fast'}`;
+      div.style.left = `${it.outStart * pps}px`;
+      div.style.width = `${w}px`;
+      div.textContent = w > 120 ? `${p.speed === 1 ? '✓ 1×' : `⏩ ${p.speed}×`} — ${p.reason}` : p.speed === 1 ? '✓ 1×' : `⏩${p.speed}×`;
+      div.title = p.reason;
+      planTrack.appendChild(div);
+    }
+  }
+
   renderOverlayTrack(s);
   paintPlayhead();
 }
@@ -496,6 +559,7 @@ function renderHistory(s: Snapshot) {
 // ---- apply a snapshot ------------------------------------------------------
 function apply(s: Snapshot, opts: { keepPlayhead?: boolean } = {}) {
   current = s;
+  if (s.agentPlan) agentPlan = s.agentPlan;
   $('fileName').textContent = s.sourcePath ? s.sourcePath.split('/').pop()! : 'no file';
   $('workspace').hidden = false;
   $('emptyState').hidden = true;
@@ -559,9 +623,16 @@ async function importPath(path: string) {
   toast(`Imported ${path.split('/').pop()}`);
   // Generate the summary, per-moment labels, and ranked highlights.
   currentHighlights = [];
+  agentPlan = [];
+  thumbs = null;
   renderHighlights();
   requestSummary();
   requestHighlights();
+  // Filmstrip thumbnails extract in the background (cached per file after that).
+  pve.thumbsEnsure().then((t) => {
+    thumbs = t;
+    if (current) renderTracks(current);
+  }).catch(() => {});
 }
 // ---- chat -----------------------------------------------------------------
 function addMsg(cls: string, text: string): HTMLElement {

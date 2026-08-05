@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; media-src pvemedia:; img-src 'self' data: blob:; connect-src 'self' pvemedia:"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; media-src pvemedia:; img-src 'self' data: blob: pvemedia:; connect-src 'self' pvemedia:"
     />
     <title>Prompt Video Editor</title>
     <link rel="stylesheet" href="styles.css" />
@@ -78,6 +78,7 @@
           <div class="tracks-wrap">
             <div class="tracks-head">
               <span>Timeline</span>
+              <span class="film-scale" id="filmScale"></span>
               <span class="track-zoom">
                 <button id="zoomOut" title="Zoom out">−</button>
                 <button id="zoomFit" title="Fit">Fit</button>
@@ -87,8 +88,10 @@
             <div class="tracks" id="tracks">
               <div class="tracks-inner" id="tracksInner">
                 <div class="t-ruler" id="ruler"></div>
+                <div class="t-film" id="trackFilm"></div>
                 <div class="t-clips" id="trackClips"></div>
                 <canvas class="t-audio" id="trackAudio" height="26"></canvas>
+                <div class="t-plan" id="trackPlan" hidden></div>
                 <div class="t-ov" id="overlayTrack"></div>
                 <div class="playhead" id="playheadLine"></div>
               </div>

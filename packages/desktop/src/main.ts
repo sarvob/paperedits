@@ -1,9 +1,10 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
 import { join, extname } from 'node:path';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdtemp, stat as fsStat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, stat as fsStat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { Readable } from 'node:stream';
+import { spawn } from 'node:child_process';
 import {
   AnthropicBackend,
   CascadeBackend,
@@ -102,6 +103,7 @@ function snapshot(): {
   sourcePath: string | null;
   audioLevels: number[];
   activityPerSec: number[];
+  agentPlan: unknown;
   mediaUrl: string | null;
 } | null {
   if (!session) return null;
@@ -115,6 +117,7 @@ function snapshot(): {
     sourcePath,
     audioLevels: session.analysis.audioLevels ?? [],
     activityPerSec: session.analysis.activityPerSec,
+    agentPlan: session.agentPlan,
     // media URL the renderer can put on a <video> element
     mediaUrl: sourcePath ? `pvemedia://local/${encodeURIComponent(sourcePath)}` : null,
   };
@@ -347,6 +350,34 @@ ipcMain.handle('session:export', async (_e, outPath: string | null, overlayPngDa
   } catch (err) {
     return { ok: false, error: (err as Error).message.split('\n')[0] };
   }
+});
+
+/**
+ * Extract filmstrip thumbnails for the current video (once per file, cached by
+ * content hash). Interval adapts to duration so we generate ≤ ~320 frames.
+ * The renderer loads them via the pvemedia:// protocol.
+ */
+ipcMain.handle('thumbs:ensure', async () => {
+  if (!session || !sourcePath) return null;
+  const hash = session.analysis.fileHash;
+  const dur = session.analysis.durationSec;
+  const interval = [1, 2, 5, 10, 15, 30].find((i) => dur / i <= 320) ?? 60;
+  const dir = join(app.getPath('userData'), 'thumbs', `${hash}-${interval}`);
+  const count = Math.max(1, Math.floor(dur / interval));
+  if (!existsSync(join(dir, 't0001.jpg'))) {
+    await mkdir(dir, { recursive: true });
+    await new Promise<void>((resolve, reject) => {
+      const p = spawn('ffmpeg', [
+        '-y', '-i', sourcePath!,
+        '-vf', `fps=1/${interval},scale=160:-2`,
+        '-q:v', '6',
+        join(dir, 't%04d.jpg'),
+      ]);
+      p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg thumbs exited ${code}`))));
+      p.on('error', reject);
+    });
+  }
+  return { dir, interval, count };
 });
 
 /** If a sample clip exists, tell the renderer so it can offer a one-click load. */

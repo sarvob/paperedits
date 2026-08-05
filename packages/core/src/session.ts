@@ -1,6 +1,6 @@
 import { applyOps } from './apply.js';
 import { buildDigest } from './digest.js';
-import { initialEdl } from './edl.js';
+import { initialEdl, outputDuration } from './edl.js';
 import { History } from './history.js';
 import { HeuristicBackend } from './intelligence/heuristic.js';
 import type { Backend, HistoryEntry } from './intelligence/index.js';
@@ -8,7 +8,7 @@ import { normalize, type PostProcessConfig } from './postprocess.js';
 import { segment, type SegmentConfig } from './segment.js';
 import { ReadTools } from './tools/read.js';
 import { isMutating, validateOps } from './validate.js';
-import type { Analysis, Atom, Candidate, Digest, Edl, Overlay, ValidationError, VideoHighlights, VideoSummary } from './types.js';
+import type { Analysis, Atom, Candidate, Digest, Edl, MutatingOp, Overlay, ValidationError, VideoHighlights, VideoSummary } from './types.js';
 
 export interface SessionConfig {
   segment?: SegmentConfig;
@@ -19,10 +19,35 @@ export type PromptOutcome =
   | { ok: true; edl: Edl; interpretation: string }
   | { ok: false; errors: ValidationError[]; interpretation: string };
 
+/** One row of the agent's visible plan: what it decided per segment and why. */
+export interface AgentPlanItem {
+  id: string;
+  speed: number;
+  reason: string;
+}
+
 /** Result of routing a chat message — either an applied edit or a text answer. */
 export type ChatOutcome =
-  | { kind: 'edit'; ok: true; interpretation: string; edl: Edl; usedFallback: boolean }
+  | { kind: 'edit'; ok: true; interpretation: string; edl: Edl; usedFallback: boolean; plan?: AgentPlanItem[] }
   | { kind: 'answer'; ok: true; text: string };
+
+/**
+ * Parse "make the total under 5 minutes"-style instructions. Duration targets
+ * need arithmetic over every segment — an LLM can't do that reliably, so these
+ * route to the deterministic planner (which uses the LLM only for ranking).
+ */
+export function parseTargetDuration(message: string): { targetSec: number; fastSpeed: number } | null {
+  const t = message.toLowerCase();
+  const intent = /(under|less|below|within|max|total|down ?to|shorten|reduce|length|final|end up|make (it|this))/.test(t);
+  if (!intent) return null;
+  const fastMatches = [...t.matchAll(/(\d+(?:\.\d+)?)\s*x\b/g)].map((m) => Number(m[1])).filter((v) => v > 1);
+  const fastSpeed = fastMatches.length ? Math.max(...fastMatches) : 10;
+  const min = t.match(/(\d+(?:\.\d+)?)\s*min/);
+  if (min) return { targetSec: Number(min[1]) * 60, fastSpeed };
+  const sec = t.match(/(\d+)\s*sec/);
+  if (sec) return { targetSec: Number(sec[1]), fastSpeed };
+  return null;
+}
 
 const ACTION_VERB =
   /^(speed|slow|cut|remove|delete|drop|add|insert|make|set|label|caption|overlay|mute|keep|retime|split|merge|reorder|change|put|apply|classify|mark|trim|shorten|lengthen|extend|undo|redo)\b/;
@@ -103,6 +128,24 @@ export class Session {
     if (isQuestion(message)) {
       const text = await this.answer(backend, message);
       return { kind: 'answer', ok: true, text };
+    }
+
+    // Duration targets go to the deterministic planner (LLM ranks, code fits).
+    const target = parseTargetDuration(message);
+    if (target) {
+      const fmtD = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+      const r = await this.planTargetDuration(backend, target.targetSec, target.fastSpeed);
+      return {
+        kind: 'edit',
+        ok: true,
+        interpretation:
+          `Kept ${r.kept} key segments at 1×, compressed ${this.candidates.length - r.kept} to ` +
+          `${target.fastSpeed}× → new length ${fmtD(r.resultSec)} (target ${fmtD(target.targetSec)}). ` +
+          `The plan track shows each decision and why.`,
+        edl: this.edl,
+        usedFallback: false,
+        plan: r.plan,
+      };
     }
 
     let patch = null as Awaited<ReturnType<Session['proposePatch']>> | null;
@@ -235,6 +278,64 @@ export class Session {
     }
     this.summaryCache = result;
     return result;
+  }
+
+  /** The agent's last visible plan (drawn as the plan track in the UI). */
+  agentPlan: AgentPlanItem[] | null = null;
+
+  /**
+   * Hit a target output duration: the LLM's highlight ranking decides WHICH
+   * segments matter; deterministic code decides HOW MANY can stay 1× so the
+   * total fits. Applies the retimes as one undoable step and records a
+   * per-segment plan with reasons.
+   */
+  async planTargetDuration(
+    backend: Backend,
+    targetSec: number,
+    fastSpeed = 10,
+  ): Promise<{ plan: AgentPlanItem[]; resultSec: number; kept: number }> {
+    const hl = await this.getHighlights(backend).catch(() => ({ highlights: [] }) as VideoHighlights);
+    const hlScore = new Map(hl.highlights.map((h) => [h.id, h.score]));
+    const hlWhy = new Map(hl.highlights.map((h) => [h.id, h.why || h.title]));
+
+    // Score every candidate: LLM highlight score wins; signal heuristic fills in.
+    const scored = this.candidates
+      .map((c) => ({
+        c,
+        s:
+          hlScore.get(c.id) ??
+          0.5 * c.activity + 0.3 * Math.min(1, c.speechPreview.split(/\s+/).filter(Boolean).length / 25),
+      }))
+      .sort((a, b) => b.s - a.s);
+    const rank = new Map(scored.map((x, i) => [x.c.id, i + 1]));
+
+    // Greedy: keep the most important segments at 1× while the total fits.
+    const keep = new Set<string>();
+    const totalWith = (k: Set<string>) =>
+      this.candidates.reduce((a, c) => a + (k.has(c.id) ? c.end - c.start : (c.end - c.start) / fastSpeed), 0);
+    for (const { c } of scored) {
+      keep.add(c.id);
+      if (totalWith(keep) > targetSec) keep.delete(c.id);
+    }
+
+    const keepIds = [...keep];
+    const fastIds = this.candidates.filter((c) => !keep.has(c.id)).map((c) => c.id);
+    const ops: MutatingOp[] = [{ op: 'classify', definition: `target ≤ ${Math.round(targetSec)}s`, keyIds: keepIds }];
+    if (keepIds.length) ops.push({ op: 'retime', ids: keepIds, speed: 1 });
+    if (fastIds.length) ops.push({ op: 'retime', ids: fastIds, speed: fastSpeed });
+
+    const applied = applyOps(this.history.edl, ops, {});
+    const normalized = normalize(applied, this.atoms, this.cfg.postprocess);
+    this.history.commit(normalized, `fit under ${Math.round(targetSec)}s`);
+
+    this.agentPlan = this.candidates.map((c) => ({
+      id: c.id,
+      speed: keep.has(c.id) ? 1 : fastSpeed,
+      reason: keep.has(c.id)
+        ? hlWhy.get(c.id) ?? `Ranked #${rank.get(c.id)} by importance — kept at 1×`
+        : `Rank #${rank.get(c.id)} — below the cut for the time budget, compressed ${fastSpeed}×`,
+    }));
+    return { plan: this.agentPlan, resultSec: outputDuration(this.history.edl), kept: keepIds.length };
   }
 
   private highlightsCache: VideoHighlights | null = null;

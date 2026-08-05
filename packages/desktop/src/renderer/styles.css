@@ -237,6 +237,24 @@ button.primary:hover:not(:disabled) { background: #6f9bff; }
   font-size: 9px; color: var(--muted);
 }
 .t-ruler .tick { position: absolute; top: 2px; border-left: 1px solid var(--line); padding-left: 3px; height: 16px; }
+.film-scale { margin-left: 10px; font-size: 11px; text-transform: none; letter-spacing: 0; opacity: 0.7; }
+.t-film {
+  position: relative; height: 54px; border-bottom: 1px solid var(--line);
+  background: #07090c; overflow: hidden;
+}
+.t-film:empty { height: 0; border-bottom: none; }
+.t-film .film-frame {
+  position: absolute; top: 0; height: 54px; width: 96px;
+  object-fit: cover; border-right: 1px solid #000;
+}
+.t-plan { position: relative; height: 24px; border-bottom: 1px solid var(--line); background: #0d0f14; }
+.t-plan .plan-block {
+  position: absolute; top: 2px; bottom: 2px; border-radius: 4px;
+  font-size: 10px; line-height: 18px; padding: 0 5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default;
+}
+.t-plan .plan-keep { background: rgba(53, 196, 107, 0.25); color: #7ee2a8; border: 1px solid rgba(53,196,107,0.5); }
+.t-plan .plan-fast { background: rgba(240, 161, 58, 0.18); color: #f0c98a; border: 1px solid rgba(240,161,58,0.4); }
 .t-clips { position: relative; height: 52px; border-bottom: 1px solid var(--line); }
 .t-clips .clip {
   position: absolute; top: 3px; bottom: 3px;
