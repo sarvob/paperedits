@@ -12,6 +12,8 @@
 }
 
 * { box-sizing: border-box; }
+/* the `hidden` attribute must win over component display rules (flex/grid) */
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg);
@@ -231,6 +233,16 @@ button.primary:hover:not(:disabled) { background: #6f9bff; }
   font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--muted); white-space: pre-wrap; word-break: break-word;
 }
+/* ---- intelligence backend selector ---- */
+.be-select, .be-cfg input {
+  width: 100%; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit;
+}
+.be-cfg { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+#applyBackend { width: 100%; margin-top: 8px; }
+.be-status { font-size: 11px; color: var(--muted); margin-top: 8px; }
+.be-status.net { color: var(--fast); }
+
 .checks { list-style: none; margin: 0; padding: 0; font-size: 12px; }
 .checks li { display: flex; gap: 8px; padding: 3px 0; color: var(--muted); }
 .checks li .ok { color: var(--key); }

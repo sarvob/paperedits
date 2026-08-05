@@ -74,6 +74,25 @@
       </section>
 
       <aside class="sidebar">
+        <div class="panel">
+          <h3>Intelligence</h3>
+          <select id="backendSel" class="be-select">
+            <option value="heuristic">Heuristic — no LLM, local</option>
+            <option value="ollama">Ollama — local LLM</option>
+            <option value="remote">Remote — BYO key</option>
+          </select>
+          <div id="ollamaCfg" class="be-cfg" hidden>
+            <input id="ollamaModel" type="text" value="llama3.2:3b" placeholder="model (e.g. llama3.2:3b)" />
+          </div>
+          <div id="remoteCfg" class="be-cfg" hidden>
+            <input id="remoteBase" type="text" placeholder="https://api.openai.com/v1" />
+            <input id="remoteModel" type="text" placeholder="model (e.g. gpt-4o-mini)" />
+            <input id="remoteKey" type="password" placeholder="API key — stays on this machine" />
+          </div>
+          <button id="applyBackend">Use this backend</button>
+          <div id="backendStatus" class="be-status">Active: heuristic (local)</div>
+        </div>
+
         <div class="panel" id="overlayPanel" hidden>
           <h3>Overlays</h3>
           <div class="overlay-list" id="overlayList"></div>

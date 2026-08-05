@@ -6,11 +6,15 @@ import { tmpdir } from 'node:os';
 import { Readable } from 'node:stream';
 import {
   HeuristicBackend,
+  OllamaBackend,
+  RemoteBackend,
   Session,
   buildOutboundText,
   digestToPrompt,
   estimateTokens,
+  type Backend,
   type Edl,
+  type OutboundGate,
 } from '@pve/core';
 import { FfmpegImporter, renderToFile, runSystemChecks } from '@pve/import';
 
@@ -28,8 +32,25 @@ protocol.registerSchemesAsPrivileged([
 // ---- session state (one imported file at a time) --------------------------
 let session: Session | null = null;
 let sourcePath: string | null = null;
-const backend = new HeuristicBackend();
 const importer = new FfmpegImporter();
+
+// The heuristic backend is always available as the fallback; `currentBackend`
+// is what the user selected (heuristic / ollama / remote).
+const heuristicBackend = new HeuristicBackend();
+let currentBackend: Backend = heuristicBackend;
+
+/** Remote sends only after the user approves the exact outbound text. */
+const outboundGate: OutboundGate = async (text) => {
+  const r = await dialog.showMessageBox({
+    type: 'question',
+    buttons: ['Send', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    message: 'Send this text to the remote model?',
+    detail: text.length > 3000 ? text.slice(0, 3000) + '\n…(truncated)' : text,
+  });
+  return r.response === 0;
+};
 
 /** Serializable snapshot the renderer draws from. */
 function snapshot(): {
@@ -89,11 +110,49 @@ ipcMain.handle('session:import', async (_e, path: string) => {
 
 ipcMain.handle('session:prompt', async (_e, instruction: string) => {
   if (!session) return { ok: false, error: 'no file imported' };
-  const res = await session.prompt(instruction, backend);
+
+  // Try the selected backend; if it errors or its ops are rejected, fall back to
+  // the heuristic so an instruction never silently no-ops on a bad LLM response.
+  let res = null as Awaited<ReturnType<Session['prompt']>> | null;
+  let note = '';
+  try {
+    res = await session.prompt(instruction, currentBackend);
+  } catch (err) {
+    note = (err as Error).message;
+  }
+  let usedFallback = false;
+  if ((!res || !res.ok) && currentBackend !== heuristicBackend) {
+    usedFallback = true;
+    res = await session.prompt(instruction, heuristicBackend);
+  }
+  if (!res) return { ok: false, error: note || 'failed' };
   if (!res.ok) {
     return { ok: false, rejected: true, errors: res.errors.map((x) => x.reason), interpretation: res.interpretation };
   }
-  return { ok: true, interpretation: res.interpretation, ...snapshot()! };
+  return {
+    ok: true,
+    interpretation: (usedFallback ? '(LLM output unusable → heuristic) ' : '') + res.interpretation,
+    usedFallback,
+    backendUsed: usedFallback ? 'heuristic' : currentBackend.name,
+    ...snapshot()!,
+  };
+});
+
+ipcMain.handle('settings:setBackend', async (_e, kind: string, config: { model?: string; host?: string; apiBase?: string; apiKey?: string }) => {
+  try {
+    if (kind === 'ollama') {
+      currentBackend = new OllamaBackend({ model: config.model || 'llama3.2:3b', host: config.host });
+    } else if (kind === 'remote') {
+      if (!config.apiBase || !config.model) return { ok: false, error: 'apiBase and model required' };
+      const key = config.apiKey || '';
+      currentBackend = new RemoteBackend({ apiBase: config.apiBase, model: config.model, getApiKey: async () => key }, outboundGate);
+    } else {
+      currentBackend = heuristicBackend;
+    }
+    return { ok: true, name: currentBackend.name, network: currentBackend.network };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
 });
 
 ipcMain.handle('session:undo', async () => {
@@ -141,7 +200,7 @@ ipcMain.handle('session:outbound', async (_e, instruction: string) => {
     instruction,
     tools: {} as never,
   });
-  return { network: backend.network, text };
+  return { network: currentBackend.network, text };
 });
 
 ipcMain.handle('session:export', async (_e, outPath: string | null, overlayPngDataUrls: Record<string, string>) => {

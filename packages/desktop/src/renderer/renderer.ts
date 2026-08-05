@@ -20,6 +20,7 @@ interface PveApi {
   redo(): Promise<Snapshot | null>;
   setSpeed(id: string, speed: number): Promise<Snapshot | null>;
   outbound(i: string): Promise<{ network: boolean; text: string }>;
+  setBackend(kind: string, config: unknown): Promise<{ ok: boolean; name?: string; network?: boolean; error?: string }>;
   addOverlay(o: unknown): Promise<Snapshot | null>;
   updateOverlay(id: string, patch: unknown, label: string): Promise<Snapshot | null>;
   removeOverlay(id: string): Promise<Snapshot | null>;
@@ -456,6 +457,31 @@ $('addText').onclick = addTextOverlay;
 $('stage').addEventListener('mousedown', (e) => { const id = (e.target as HTMLElement).id; if (id === 'previewCanvas' || id === 'overlayLayer') selectOverlay(null); });
 // Repaint the canvas whenever the decode source produces a new frame.
 for (const ev of ['seeked', 'loadeddata', 'canplay']) video().addEventListener(ev, drawFrame);
+
+// ---- backend selector ------------------------------------------------------
+$('backendSel').addEventListener('change', () => {
+  const kind = ($('backendSel') as HTMLSelectElement).value;
+  $('ollamaCfg').hidden = kind !== 'ollama';
+  $('remoteCfg').hidden = kind !== 'remote';
+});
+$('applyBackend').onclick = async () => {
+  const kind = ($('backendSel') as HTMLSelectElement).value;
+  const config: Record<string, string> = {};
+  if (kind === 'ollama') config.model = ($('ollamaModel') as HTMLInputElement).value.trim();
+  if (kind === 'remote') {
+    config.apiBase = ($('remoteBase') as HTMLInputElement).value.trim();
+    config.model = ($('remoteModel') as HTMLInputElement).value.trim();
+    config.apiKey = ($('remoteKey') as HTMLInputElement).value;
+  }
+  const r = await pve.setBackend(kind, config);
+  if (!r.ok) return toast(r.error || 'could not set backend', true);
+  const scope = r.network ? 'remote' : 'local';
+  $('backendStatus').className = `be-status${r.network ? ' net' : ''}`;
+  $('backendStatus').textContent = `Active: ${r.name} (${scope})`;
+  const badge = document.querySelector('.brand .mode');
+  if (badge) badge.textContent = `${scope} · ${r.name}`;
+  toast(`Backend: ${r.name}`);
+};
 
 (async () => {
   await renderChecks();
