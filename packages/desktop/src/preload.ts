@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+type ProgressCb = (p: { stage: string; pct: number }) => void;
+
 /**
  * The only bridge between the sandboxed renderer and the engine in the main
  * process. Every method is an explicit, typed IPC call — the renderer has no
@@ -10,6 +12,11 @@ contextBridge.exposeInMainWorld('pve', {
   openFile: () => ipcRenderer.invoke('file:open'),
   samplePath: () => ipcRenderer.invoke('sample:path'),
   import: (path: string) => ipcRenderer.invoke('session:import', path),
+  onImportProgress: (cb: ProgressCb) => {
+    const listener = (_e: unknown, p: { stage: string; pct: number }) => cb(p);
+    ipcRenderer.on('import:progress', listener);
+    return () => ipcRenderer.removeListener('import:progress', listener);
+  },
   prompt: (instruction: string) => ipcRenderer.invoke('session:prompt', instruction),
   undo: () => ipcRenderer.invoke('session:undo'),
   redo: () => ipcRenderer.invoke('session:redo'),

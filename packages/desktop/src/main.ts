@@ -18,6 +18,12 @@ import {
 } from '@pve/core';
 import { FfmpegImporter, renderToFile, runSystemChecks } from '@pve/import';
 
+// A GUI app launched by double-click inherits a minimal PATH that omits
+// /opt/homebrew/bin etc., so ffmpeg/ffprobe/whisper-cli can't be spawned and
+// import fails silently. Ensure the common binary dirs are always on PATH.
+const EXTRA_PATHS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin'];
+process.env.PATH = [...new Set([...(process.env.PATH ?? '').split(':').filter(Boolean), ...EXTRA_PATHS])].join(':');
+
 // Work around a Chromium/macOS compositing bug where <video> decodes fine
 // (canvas can read frames) but the hardware overlay layer paints black. Forcing
 // software compositing makes the preview render reliably.
@@ -97,14 +103,17 @@ ipcMain.handle('file:open', async () => {
   return res.canceled ? null : res.filePaths[0];
 });
 
-ipcMain.handle('session:import', async (_e, path: string) => {
+ipcMain.handle('session:import', async (e, path: string) => {
   try {
-    const analysis = await importer.analyze(path);
+    const analysis = await importer.analyze(path, {
+      onProgress: (stage, pct) => e.sender.send('import:progress', { stage, pct }),
+    });
     session = new Session(analysis);
     sourcePath = path;
     return { ok: true, ...snapshot()! };
   } catch (err) {
-    return { ok: false, error: (err as Error).message };
+    // Surface the real reason (missing binary, unreadable file, etc.).
+    return { ok: false, error: (err as Error).message.split('\n').slice(0, 3).join(' ') };
   }
 });
 

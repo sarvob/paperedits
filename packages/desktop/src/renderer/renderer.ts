@@ -15,6 +15,7 @@ interface PveApi {
   openFile(): Promise<string | null>;
   samplePath(): Promise<string | null>;
   import(path: string): Promise<{ ok: boolean; error?: string } & Partial<Snapshot>>;
+  onImportProgress(cb: (p: { stage: string; pct: number }) => void): () => void;
   prompt(i: string): Promise<{ ok: boolean; rejected?: boolean; errors?: string[]; interpretation?: string } & Partial<Snapshot>>;
   undo(): Promise<Snapshot | null>;
   redo(): Promise<Snapshot | null>;
@@ -355,17 +356,50 @@ function apply(s: Snapshot, opts: { keepPlayhead?: boolean } = {}) {
 }
 
 // ---- import / prompt / export ---------------------------------------------
+const STAGE_LABEL: Record<string, string> = {
+  scan: 'Scanning container (activity + scene cuts)',
+  transcribe: 'Transcribing audio (whisper)',
+  visual: 'Analyzing frames',
+  caption: 'Captioning keyframes',
+  segment: 'Segmenting',
+  done: 'Done',
+};
 async function importPath(path: string) {
-  toast('Importing… (whisper + scan)');
-  const res = await pve.import(path);
-  if (!res.ok) return toast(res.error || 'import failed', true);
+  // Show the persistent importing panel (not a transient toast) so it's always
+  // clear whether processing is happening.
+  $('emptyState').hidden = true;
+  $('importError').hidden = true;
+  $('workspace').hidden = true;
+  $('importing').hidden = false;
+  $('impStage').textContent = 'starting';
+  ($('impFill') as HTMLElement).style.width = '3%';
+
+  const off = pve.onImportProgress(({ stage, pct }) => {
+    $('impStage').textContent = STAGE_LABEL[stage] ?? stage;
+    ($('impFill') as HTMLElement).style.width = `${pct}%`;
+  });
+
+  let res;
+  try {
+    res = await pve.import(path);
+  } finally {
+    off();
+  }
+  $('importing').hidden = true;
+
+  if (!res.ok) {
+    // Persistent, dismissible error with the real reason.
+    $('importError').hidden = false;
+    if (!current) $('emptyState').hidden = true;
+    $('importErrorMsg').textContent = res.error || 'unknown error';
+    return;
+  }
   apply(res as Snapshot);
-  // Force a fresh decode even if the media URL (path) is unchanged from a prior import.
   const v = video();
   if ((res as Snapshot).mediaUrl) { v.setAttribute('src', (res as Snapshot).mediaUrl!); v.load(); }
   startPaintLoop();
   $('outbound').textContent = (res as Snapshot).digestText || '';
-  toast('Imported.');
+  toast(`Imported ${path.split('/').pop()}`);
 }
 async function applyInstruction() {
   const input = $('cmd') as HTMLInputElement;
@@ -451,6 +485,10 @@ $('cmd').addEventListener('input', (e) => refreshOutbound((e.target as HTMLInput
 $('undoBtn').onclick = async () => { const s = await pve.undo(); if (s) apply(s, { keepPlayhead: true }); };
 $('redoBtn').onclick = async () => { const s = await pve.redo(); if (s) apply(s, { keepPlayhead: true }); };
 $('exportBtn').onclick = doExport;
+$('importErrorDismiss').onclick = () => {
+  $('importError').hidden = true;
+  if (!current) $('emptyState').hidden = false;
+};
 $('playBtn').onclick = playPause;
 $('scrub').addEventListener('input', (e) => { stop(); seek((Number((e.target as HTMLInputElement).value) / 1000) * totalDur()); });
 $('addText').onclick = addTextOverlay;

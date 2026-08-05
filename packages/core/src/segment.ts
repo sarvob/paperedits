@@ -132,7 +132,19 @@ export function buildCandidates(
   }
   if (current.length) groups.push(current);
 
-  return groups.map((group, i) => {
+  // Merge away degenerate near-zero candidates (e.g. a scene cut a few frames
+  // before end-of-file leaves a 0.04s sliver) by folding them into the previous
+  // candidate. A short FIRST candidate has no previous, so it survives.
+  const MIN_CANDIDATE_SEC = 0.5;
+  const mergedGroups: Atom[][] = [];
+  for (const group of groups) {
+    const dur = group[group.length - 1]!.end - group[0]!.start;
+    const prev = mergedGroups[mergedGroups.length - 1];
+    if (dur < MIN_CANDIDATE_SEC && prev) prev.push(...group);
+    else mergedGroups.push(group);
+  }
+
+  return mergedGroups.map((group, i) => {
     const start = group[0]!.start;
     const end = group[group.length - 1]!.end;
     const spanWords = wordsInSpan(analysis.words, start, end);

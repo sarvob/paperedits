@@ -30,6 +30,20 @@
           <p class="hint">Everything stays on your machine. Nothing is uploaded.</p>
         </div>
 
+        <div class="importing" id="importing" hidden>
+          <div class="spinner"></div>
+          <div class="imp-title">Importing…</div>
+          <div class="imp-stage" id="impStage">starting</div>
+          <div class="imp-bar"><div class="imp-fill" id="impFill"></div></div>
+          <div class="imp-note">Transcribing audio locally with whisper — this can take a bit for long clips.</div>
+        </div>
+
+        <div class="import-error" id="importError" hidden>
+          <strong>Import failed.</strong>
+          <div id="importErrorMsg"></div>
+          <button id="importErrorDismiss">Dismiss</button>
+        </div>
+
         <div id="workspace" hidden>
           <!-- live preview with the overlay layer on top -->
           <div class="stage-wrap">

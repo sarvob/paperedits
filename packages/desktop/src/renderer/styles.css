@@ -78,6 +78,24 @@ button.primary:hover:not(:disabled) { background: #6f9bff; }
 .empty { margin: auto; text-align: center; color: var(--muted); }
 .empty .hint { font-size: 12px; opacity: 0.7; }
 
+/* import progress */
+.importing { margin: auto; text-align: center; color: var(--text); display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.spinner { width: 34px; height: 34px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.imp-title { font-size: 15px; font-weight: 600; }
+.imp-stage { font-size: 12px; color: var(--muted); text-transform: capitalize; }
+.imp-bar { width: 240px; height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
+.imp-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
+.imp-note { font-size: 11px; color: var(--muted); max-width: 320px; }
+
+/* persistent import error */
+.import-error {
+  margin: auto; max-width: 460px; text-align: center;
+  background: rgba(255, 92, 108, 0.08); border: 1px solid var(--danger);
+  border-radius: 10px; padding: 18px 20px; color: var(--text);
+}
+.import-error #importErrorMsg { color: var(--danger); font-size: 12px; margin: 8px 0 14px; word-break: break-word; }
+
 /* ---- preview stage ---- */
 .stage-wrap { margin-bottom: 14px; }
 .stage {
