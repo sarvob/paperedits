@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; media-src pvemedia:; img-src 'self' data: blob:; connect-src 'self' pvemedia:"
     />
     <title>Prompt Video Editor</title>
     <link rel="stylesheet" href="styles.css" />
@@ -31,12 +31,32 @@
         </div>
 
         <div id="workspace" hidden>
-          <div class="timeline-wrap">
-            <div class="timeline" id="timeline"></div>
-            <div class="ruler" id="ruler"></div>
+          <!-- live preview with the overlay layer on top -->
+          <div class="stage-wrap">
+            <div class="stage" id="stage">
+              <video id="preview" muted playsinline></video>
+              <canvas id="previewCanvas"></canvas>
+              <div class="overlay-layer" id="overlayLayer"></div>
+              <div class="card-splash" id="cardSplash" hidden></div>
+            </div>
+            <div class="transport">
+              <button id="playBtn" title="Play/Pause">▶</button>
+              <input type="range" id="scrub" min="0" max="1000" value="0" />
+              <span class="tc" id="tc">0:00 / 0:00</span>
+            </div>
+            <div class="overlay-toolbar">
+              <span class="ot-label">Add overlay:</span>
+              <button id="addText">＋ Text</button>
+              <span class="emoji-row" id="emojiRow"></span>
+              <span class="ot-hint">drag an overlay in the preview to move it</span>
+            </div>
           </div>
 
-          <div class="edl" id="edl"></div>
+          <div class="timeline-wrap">
+            <div class="timeline" id="timeline"></div>
+            <div class="overlay-track" id="overlayTrack"></div>
+            <div class="ruler" id="ruler"></div>
+          </div>
 
           <div class="commandbar">
             <input
@@ -48,10 +68,17 @@
             <button id="applyBtn" class="primary">Apply</button>
           </div>
           <div class="interpretation" id="interpretation"></div>
+
+          <div class="edl" id="edl"></div>
         </div>
       </section>
 
       <aside class="sidebar">
+        <div class="panel" id="overlayPanel" hidden>
+          <h3>Overlays</h3>
+          <div class="overlay-list" id="overlayList"></div>
+        </div>
+
         <div class="panel">
           <h3>🔒 What leaves the machine</h3>
           <div class="outbound-status" id="outboundStatus">Local mode — 0 bytes leave.</div>

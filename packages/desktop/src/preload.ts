@@ -15,5 +15,9 @@ contextBridge.exposeInMainWorld('pve', {
   redo: () => ipcRenderer.invoke('session:redo'),
   setSpeed: (entryId: string, speed: number) => ipcRenderer.invoke('session:setSpeed', entryId, speed),
   outbound: (instruction: string) => ipcRenderer.invoke('session:outbound', instruction),
-  export: (outPath?: string | null) => ipcRenderer.invoke('session:export', outPath ?? null),
+  addOverlay: (overlay: unknown) => ipcRenderer.invoke('overlay:add', overlay),
+  updateOverlay: (id: string, patch: unknown, label: string) => ipcRenderer.invoke('overlay:update', id, patch, label),
+  removeOverlay: (id: string) => ipcRenderer.invoke('overlay:remove', id),
+  export: (outPath: string | null, overlayPngs: Record<string, string>) =>
+    ipcRenderer.invoke('session:export', outPath ?? null, overlayPngs ?? {}),
 });

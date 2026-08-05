@@ -1,5 +1,5 @@
 import { cloneEdl } from './edl.js';
-import type { CardEntry, Edl, EdlEntry, MutatingOp, SegmentEntry } from './types.js';
+import type { CardEntry, Edl, EdlEntry, MutatingOp, Overlay, SegmentEntry } from './types.js';
 
 export interface ApplyOptions {
   /**
@@ -35,6 +35,14 @@ function nextCardId(): string {
   return `card_${cardSeq}`;
 }
 
+let overlaySeq = 0;
+function nextOverlayId(): string {
+  overlaySeq += 1;
+  return `ov_${overlaySeq}`;
+}
+
+const EMOJI_RE = /\p{Extended_Pictographic}/u;
+
 /**
  * Apply a validated op list to the EDL, returning a new EDL. Assumes ops have
  * already passed validateOps — this function does no id-existence checking, it
@@ -62,10 +70,55 @@ export function applyOps(edl: Edl, ops: MutatingOp[], opts: ApplyOptions = {}): 
         break;
       }
       case 'overlay': {
-        next.entries = next.entries.map((e) => {
-          if (!isSegment(e) || !targets(op.ids, e) || !mayTouch(e, explicit)) return e;
-          return { ...e, label: op.text };
-        });
+        // Create a real overlay-layer object anchored to each targeted segment
+        // (auto-labels ride with their clip). Keep `label` too, for chapter
+        // export. Replace any existing non-pinned auto-label on that segment so
+        // re-running "label the fast parts" doesn't stack duplicates.
+        for (const e of next.entries) {
+          if (!isSegment(e) || !targets(op.ids, e) || !mayTouch(e, explicit)) continue;
+          e.label = op.text;
+          next.overlays = next.overlays.filter(
+            (o) => !(o.anchor.mode === 'segment' && o.anchor.segmentId === e.id && !o.pinned),
+          );
+          next.overlays.push({
+            id: nextOverlayId(),
+            kind: EMOJI_RE.test(op.text) && [...op.text].length <= 3 ? 'emoji' : 'text',
+            content: op.text,
+            x: 0.5,
+            y: 0.86,
+            size: 0.07,
+            color: '#ffffff',
+            box: op.style !== 'badge',
+            anchor: { mode: 'segment', segmentId: e.id },
+            pinned: false,
+          });
+        }
+        break;
+      }
+      case 'add_overlay': {
+        const o: Overlay = {
+          id: op.overlay.id ?? nextOverlayId(),
+          kind: op.overlay.kind,
+          content: op.overlay.content,
+          x: op.overlay.x,
+          y: op.overlay.y,
+          size: op.overlay.size,
+          ...(op.overlay.color ? { color: op.overlay.color } : {}),
+          ...(op.overlay.box != null ? { box: op.overlay.box } : {}),
+          anchor: op.overlay.anchor,
+          pinned: op.overlay.pinned ?? true,
+        };
+        next.overlays.push(o);
+        break;
+      }
+      case 'update_overlay': {
+        next.overlays = next.overlays.map((o) =>
+          o.id === op.id ? { ...o, ...op.patch, id: o.id } : o,
+        );
+        break;
+      }
+      case 'remove_overlay': {
+        next.overlays = next.overlays.filter((o) => o.id !== op.id);
         break;
       }
       case 'audio': {
@@ -76,12 +129,21 @@ export function applyOps(edl: Edl, ops: MutatingOp[], opts: ApplyOptions = {}): 
         break;
       }
       case 'cut': {
+        const removed = new Set<string>();
         next.entries = next.entries.filter((e) => {
           if (!isSegment(e)) return true;
           if (!targets(op.ids, e)) return true;
           // A broad cut skips pinned entries; an explicit cut removes them.
-          return !mayTouch(e, explicit);
+          if (mayTouch(e, explicit)) {
+            removed.add(e.id);
+            return false;
+          }
+          return true;
         });
+        // Drop overlays that were anchored to a removed segment.
+        next.overlays = next.overlays.filter(
+          (o) => !(o.anchor.mode === 'segment' && removed.has(o.anchor.segmentId)),
+        );
         break;
       }
       case 'insert': {

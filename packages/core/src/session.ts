@@ -7,7 +7,7 @@ import { normalize, type PostProcessConfig } from './postprocess.js';
 import { segment, type SegmentConfig } from './segment.js';
 import { ReadTools } from './tools/read.js';
 import { isMutating, validateOps } from './validate.js';
-import type { Analysis, Atom, Candidate, Digest, Edl, ValidationError } from './types.js';
+import type { Analysis, Atom, Candidate, Digest, Edl, Overlay, ValidationError } from './types.js';
 
 export interface SessionConfig {
   segment?: SegmentConfig;
@@ -98,6 +98,24 @@ export class Session {
       e.id === entryId && e.kind === 'segment' ? { ...e, speed, pinned: true } : e,
     );
     this.history.commit({ ...edl, entries }, `set ${entryId} → ${speed}×`);
+  }
+
+  /** Add an overlay to the layer (a manual edit; the overlay is pinned). */
+  addOverlay(overlay: Omit<Overlay, 'id' | 'pinned'> & { id?: string }): Overlay {
+    const applied = applyOps(this.history.edl, [{ op: 'add_overlay', overlay: { ...overlay, pinned: true } }]);
+    this.history.commit(applied, `add ${overlay.kind} overlay`);
+    return applied.overlays[applied.overlays.length - 1]!;
+  }
+
+  /** Update an overlay (move, resize, restyle, retime). Manual edit. */
+  updateOverlay(id: string, patch: Partial<Omit<Overlay, 'id'>>, label = 'edit overlay'): void {
+    const applied = applyOps(this.history.edl, [{ op: 'update_overlay', id, patch }]);
+    this.history.commit(applied, label);
+  }
+
+  removeOverlay(id: string): void {
+    const applied = applyOps(this.history.edl, [{ op: 'remove_overlay', id }]);
+    this.history.commit(applied, `remove overlay`);
   }
 
   undo(): string | null {

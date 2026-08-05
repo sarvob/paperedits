@@ -149,12 +149,50 @@ export interface CardEntry {
 
 export type EdlEntry = SegmentEntry | CardEntry;
 
+// ---------------------------------------------------------------------------
+// Overlay layer — text / emoji / boxes that float ABOVE the composited video.
+// Overlays are their OWN objects (not a property of a segment): each has its own
+// timing, position and style, so the user can move it, restyle it, and set how
+// long it runs independently of the cut. This is what makes labels a real layer.
+// ---------------------------------------------------------------------------
+
+export type OverlayKind = 'text' | 'emoji';
+
+/**
+ * Timing anchor. `segment` mode pins the overlay to a segment's output extent
+ * (auto-labels ride with their clip through retimes); `output` mode pins it to
+ * an absolute window on the edited timeline (freeform overlays the user drags).
+ */
+export type OverlayAnchor =
+  | { mode: 'segment'; segmentId: string }
+  | { mode: 'output'; start: number; duration: number };
+
+export interface Overlay {
+  id: string;
+  kind: OverlayKind;
+  /** the text, or the emoji character(s) */
+  content: string;
+  /** centre position as a fraction of the frame, 0..1 (x from left, y from top) */
+  x: number;
+  y: number;
+  /** height as a fraction of frame height (font/emoji size) */
+  size: number;
+  color?: string;
+  /** draw a translucent box behind text for legibility */
+  box?: boolean;
+  anchor: OverlayAnchor;
+  /** user-created / hand-edited overlays are pinned; prompts won't touch them */
+  pinned: boolean;
+}
+
 /** Output aspect ratio target. */
 export type Aspect = 'source' | '16:9' | '9:16' | '1:1';
 
 export interface Edl {
   fileHash: string;
   entries: EdlEntry[];
+  /** the overlay track — layered over the composited segments at render */
+  overlays: Overlay[];
   aspect: Aspect;
 }
 
@@ -177,6 +215,10 @@ export type Op =
   | { op: 'cut'; ids: string[] }
   | { op: 'audio'; action: 'mute' | 'music' | 'duck'; ids: string[] }
   | { op: 'reframe'; aspect: Aspect }
+  // overlay-layer mutations (used by manual GUI edits and, later, the agent)
+  | { op: 'add_overlay'; overlay: Omit<Overlay, 'id' | 'pinned'> & { id?: string; pinned?: boolean } }
+  | { op: 'update_overlay'; id: string; patch: Partial<Omit<Overlay, 'id'>> }
+  | { op: 'remove_overlay'; id: string }
   | { op: 'export'; kind: 'video' | 'chapters' | 'description' };
 
 export type MutatingOp = Exclude<Op, { op: 'export' }>;

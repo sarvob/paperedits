@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   HeuristicBackend,
   Session,
+  applyOps,
   buildDigest,
   planRender,
   segment,
@@ -132,7 +133,71 @@ describe('interactive follow-ups compose and respect pinning', () => {
   });
 });
 
+describe('overlay layer', () => {
+  it('"label the fast parts" creates overlay-layer objects anchored to segments', async () => {
+    const session = new Session(makeAnalysis());
+    await session.prompt('key parts 1x, rest 10x, label the fast parts', new HeuristicBackend());
+    expect(session.edl.overlays.length).toBeGreaterThan(0);
+    const ov = session.edl.overlays[0]!;
+    expect(ov.anchor.mode).toBe('segment');
+    expect(ov.content.length).toBeGreaterThan(0);
+  });
+
+  it('supports manual add / update / remove with pinning and undo', async () => {
+    const session = new Session(makeAnalysis());
+    const created = session.addOverlay({
+      kind: 'emoji',
+      content: '🔥',
+      x: 0.8,
+      y: 0.2,
+      size: 0.1,
+      anchor: { mode: 'output', start: 1, duration: 3 },
+    });
+    expect(created.pinned).toBe(true);
+    expect(session.edl.overlays).toHaveLength(1);
+
+    session.updateOverlay(created.id, { x: 0.5 });
+    expect(session.edl.overlays[0]!.x).toBe(0.5);
+
+    session.undo(); // reverts the move
+    expect(session.edl.overlays[0]!.x).toBe(0.8);
+
+    session.removeOverlay(created.id);
+    expect(session.edl.overlays).toHaveLength(0);
+  });
+
+  it('drops overlays anchored to a cut segment', async () => {
+    const session = new Session(makeAnalysis());
+    await session.prompt('label the fast parts', new HeuristicBackend());
+    const anchored = session.edl.overlays.find((o) => o.anchor.mode === 'segment')!;
+    const segId = anchored.anchor.mode === 'segment' ? anchored.anchor.segmentId : '';
+    const seg = session.edl.entries.find((e) => e.id === segId)!;
+    // Cut that exact entry directly; its anchored overlay must be removed too.
+    const after = applyOps(session.edl, [{ op: 'cut', ids: [seg.id] }]);
+    expect(after.entries.some((e) => e.id === segId)).toBe(false);
+    expect(after.overlays.some((o) => o.anchor.mode === 'segment' && o.anchor.segmentId === segId)).toBe(false);
+  });
+});
+
 describe('render plan', () => {
+  it('composites overlays as PNG layers (no drawtext needed)', async () => {
+    const session = new Session(makeAnalysis());
+    session.addOverlay({ kind: 'text', content: 'Hi', x: 0.5, y: 0.8, size: 0.07, anchor: { mode: 'output', start: 0, duration: 2 } });
+    const plan = planRender(session.edl, {
+      input: 'in.mp4',
+      output: 'out.mp4',
+      quality: 'match',
+      encoder: 'videotoolbox',
+      overlays: [{ png: '/tmp/ov.png', xFrac: 0.5, yFrac: 0.8, start: 0, end: 2 }],
+    });
+    expect(plan.filterComplex).toContain('overlay=');
+    expect(plan.filterComplex).toContain("enable='between(t,0.000,2.000)'");
+    expect(plan.filterComplex).not.toContain('drawtext');
+    expect(plan.args).toContain('/tmp/ov.png');
+  });
+});
+
+describe('render plan (base)', () => {
   it('builds a concat filtergraph without needing ffmpeg', async () => {
     const session = new Session(makeAnalysis());
     await session.prompt('key parts 1x, rest 10x, label the fast parts', new HeuristicBackend());

@@ -8,7 +8,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { evaluatePreflight, type PreflightReport, type ProbeResult } from '@pve/core';
 import { findModel } from './transcribe.js';
-import { hasDrawtext } from './render-exec.js';
 
 const run = promisify(execFile);
 
@@ -58,22 +57,14 @@ async function checkEncoder(): Promise<ProbeResult> {
   }
 }
 
-async function checkLabelBurn(): Promise<ProbeResult> {
-  const ok = await hasDrawtext().catch(() => false);
-  return ok
-    ? { ok: true, detail: 'drawtext available' }
-    : { ok: false, detail: 'ffmpeg built without libfreetype; labels not burned' };
-}
-
 /** Probe the machine and produce the pass/fail report. */
 export async function runSystemChecks(): Promise<PreflightReport> {
-  const [node, ffmpeg, ffprobe, whisper, encoder, labelburn] = await Promise.all([
+  const [node, ffmpeg, ffprobe, whisper, encoder] = await Promise.all([
     checkNode(),
     tryVersion('ffmpeg'),
     tryVersion('ffprobe'),
     checkWhisper(),
     checkEncoder(),
-    checkLabelBurn(),
   ]);
-  return evaluatePreflight({ node, ffmpeg, ffprobe, whisper, encoder, labelburn });
+  return evaluatePreflight({ node, ffmpeg, ffprobe, whisper, encoder });
 }

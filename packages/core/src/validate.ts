@@ -59,6 +59,29 @@ export function validateOps(ops: Op[], digest: Digest, edl: Edl): ValidationErro
         if (unknown.length) errors.push({ op, reason: `unknown id(s): ${unknown.join(', ')}` });
         break;
       }
+      case 'add_overlay': {
+        const o = op.overlay;
+        if (!o.content.trim()) errors.push({ op, reason: 'overlay content is empty' });
+        if (o.anchor.mode === 'segment' && !entryIds.has(o.anchor.segmentId)) {
+          errors.push({ op, reason: `overlay anchored to unknown segment ${o.anchor.segmentId}` });
+        }
+        if (o.anchor.mode === 'output' && !(o.anchor.duration > 0)) {
+          errors.push({ op, reason: 'overlay duration must be > 0' });
+        }
+        break;
+      }
+      case 'update_overlay': {
+        if (!edl.overlays.some((o) => o.id === op.id)) {
+          errors.push({ op, reason: `unknown overlay ${op.id}` });
+        }
+        break;
+      }
+      case 'remove_overlay': {
+        if (!edl.overlays.some((o) => o.id === op.id)) {
+          errors.push({ op, reason: `unknown overlay ${op.id}` });
+        }
+        break;
+      }
       case 'reframe':
       case 'export':
         break;

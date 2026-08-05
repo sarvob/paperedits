@@ -80,16 +80,6 @@ export const REQUIREMENTS: Requirement[] = [
     required: false,
     installHint: { default: 'Optional — software x264 is used if unavailable' },
   },
-  {
-    id: 'labelburn',
-    name: 'text label burn (drawtext)',
-    why: 'burn segment labels into the video; without it labels stay in the EDL only',
-    required: false,
-    installHint: {
-      darwin: 'Install an ffmpeg built with libfreetype (e.g. brew ffmpeg with freetype)',
-      default: 'Rebuild/install ffmpeg with --enable-libfreetype',
-    },
-  },
 ];
 
 /** Result of probing one requirement on this machine. */

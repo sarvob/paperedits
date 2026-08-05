@@ -2,6 +2,23 @@ import { outputDuration } from './edl.js';
 import { mergedForRender } from './postprocess.js';
 import type { Edl, SegmentEntry } from './types.js';
 
+/**
+ * One overlay to composite, already resolved to an on-disk PNG and an output-
+ * time window. The engine stays pure: it only references the PNG path and never
+ * rasterizes text itself. The caller (the Electron renderer via canvas, or any
+ * HTML→PNG path) produces the images — so text/emoji rendering needs no ffmpeg
+ * freetype support at all.
+ */
+export interface OverlayRenderSpec {
+  png: string;
+  /** centre position as a fraction of the frame, 0..1 */
+  xFrac: number;
+  yFrac: number;
+  /** on-screen window on the OUTPUT timeline (seconds) */
+  start: number;
+  end: number;
+}
+
 export interface RenderOptions {
   input: string;
   output: string;
@@ -9,14 +26,8 @@ export interface RenderOptions {
   quality: 'match' | 'high' | 'draft';
   /** hardware encoder; chosen by platform at call time */
   encoder: 'videotoolbox' | 'nvenc' | 'qsv' | 'x264';
-  /** font for burned labels (drawtext needs an explicit file on macOS) */
-  fontFile?: string;
-  /**
-   * Burn segment labels into the video with drawtext. Requires an ffmpeg built
-   * with libfreetype. Set false to skip burning (labels still exist in the EDL
-   * and chapter export) when the filter is unavailable.
-   */
-  burnLabels?: boolean;
+  /** overlay layer, composited over the cut via the `overlay` filter (no freetype) */
+  overlays?: OverlayRenderSpec[];
 }
 
 export const DEFAULT_RENDER: Omit<RenderOptions, 'input' | 'output'> = {
@@ -73,8 +84,10 @@ function atempoChain(speed: number): string {
 
 /**
  * Build the single-encode render plan. Per-segment: trim, setpts for video
- * speed, atempo chain for audio, then concat. Labels burn as drawtext. Fast
- * sections at very high speed are muted rather than pitch-shifted into noise.
+ * speed, atempo chain for audio, then concat. The overlay LAYER is composited on
+ * top of the concatenated video with the `overlay` filter (each overlay a PNG,
+ * shown only within its output-time window) — no drawtext / freetype needed.
+ * Fast sections are muted rather than pitch-shifted into noise.
  */
 export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
   // Collapse contiguous identical slices here (render-time only) so the filter
@@ -85,6 +98,7 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
     text: e.kind === 'card' ? e.text : '',
     durationSec: e.kind === 'card' ? e.durationSec : 0,
   }));
+  const overlays = opts.overlays ?? [];
 
   const vLabels: string[] = [];
   const aLabels: string[] = [];
@@ -92,21 +106,11 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
 
   segs.forEach((s, i) => {
     const dur = (s.sourceEnd - s.sourceStart).toFixed(3);
-    const v = `v${i}`;
-    const a = `a${i}`;
     // Video: trim to source range, reset PTS, scale time by 1/speed.
-    let vChain = `[0:v]trim=start=${s.sourceStart.toFixed(3)}:duration=${dur},setpts=(PTS-STARTPTS)/${s.speed}`;
-    if (s.label && opts.burnLabels !== false) {
-      // Inside a single-quoted drawtext value, colons are literal; the only char
-      // that breaks the parser is the ASCII apostrophe (it closes the quote).
-      // Swap it for the typographic ’ and strip backslashes. `expansion=none`
-      // stops drawtext from interpreting %{...} sequences in the label.
-      const safe = s.label.replace(/'/g, '’').replace(/\\/g, '');
-      const font = opts.fontFile ? `fontfile='${opts.fontFile}':` : '';
-      vChain += `,drawtext=${font}text='${safe}':expansion=none:x=(w-tw)/2:y=h-th-40:fontsize=42:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=12`;
-    }
-    filters.push(`${vChain}[${v}]`);
-    vLabels.push(`[${v}]`);
+    filters.push(
+      `[0:v]trim=start=${s.sourceStart.toFixed(3)}:duration=${dur},setpts=(PTS-STARTPTS)/${s.speed}[v${i}]`,
+    );
+    vLabels.push(`[v${i}]`);
 
     // Audio: ALWAYS atempo to the segment speed so its duration matches the
     // time-compressed video (otherwise concat pads to the longer stream). Very
@@ -114,9 +118,9 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
     // but still compressed to the right length.
     const muted = s.speed > 3 || s.audio === 'mute';
     filters.push(
-      `[0:a]atrim=start=${s.sourceStart.toFixed(3)}:duration=${dur},asetpts=PTS-STARTPTS,${atempoChain(s.speed)}${muted ? ',volume=0' : ''}[${a}]`,
+      `[0:a]atrim=start=${s.sourceStart.toFixed(3)}:duration=${dur},asetpts=PTS-STARTPTS,${atempoChain(s.speed)}${muted ? ',volume=0' : ''}[a${i}]`,
     );
-    aLabels.push(`[${a}]`);
+    aLabels.push(`[a${i}]`);
   });
 
   const n = segs.length;
@@ -124,9 +128,26 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
   // videos then all audios. Then normalize loudness INSIDE the graph, since a
   // simple `-af loudnorm` cannot attach to a complex-filtergraph output.
   const interleaved = vLabels.map((v, i) => `${v}${aLabels[i]}`).join('');
-  const concat = `${interleaved}concat=n=${n}:v=1:a=1[outv][araw]`;
+  // If there are overlays, concat into an intermediate [basev] then composite.
+  const baseLabel = overlays.length ? '[basev]' : '[outv]';
+  const concat = `${interleaved}concat=n=${n}:v=1:a=1${baseLabel}[araw]`;
+
+  // Overlay layer: chain one `overlay` per PNG, gated to its output-time window.
+  // x/y centre the PNG at the requested frame fraction (W,H = main; w,h = overlay).
+  const overlayFilters: string[] = [];
+  let cur = '[basev]';
+  overlays.forEach((ov, i) => {
+    const inputIdx = i + 1; // 0 is the source video
+    const out = i === overlays.length - 1 ? '[outv]' : `[ovc${i}]`;
+    overlayFilters.push(
+      `${cur}[${inputIdx}:v]overlay=x='W*${ov.xFrac.toFixed(4)}-w/2':y='H*${ov.yFrac.toFixed(4)}-h/2':` +
+        `enable='between(t,${ov.start.toFixed(3)},${ov.end.toFixed(3)})'${out}`,
+    );
+    cur = out;
+  });
+
   const loudnorm = `[araw]loudnorm[outa]`;
-  const filterComplex = [...filters, concat, loudnorm].join(';');
+  const filterComplex = [...filters, concat, ...overlayFilters, loudnorm].join(';');
 
   const qualityFlags =
     opts.quality === 'match'
@@ -135,10 +156,12 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
         ? ['-crf', '18']
         : ['-crf', '28'];
 
+  const overlayInputs = overlays.flatMap((ov) => ['-i', ov.png]);
   const args = [
     '-y',
     '-i',
     opts.input,
+    ...overlayInputs,
     '-filter_complex',
     filterComplex,
     '-map',

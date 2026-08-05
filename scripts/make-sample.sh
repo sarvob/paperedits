@@ -30,6 +30,7 @@ ffmpeg -y -v error \
   "${AUDIO_IN[@]}" \
   -filter_complex "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]" \
   -map "[v]" "${AUDIO_MAP[@]}" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest \
+  -movflags +faststart \
   samples/buildlog.mp4
 
 echo "wrote samples/buildlog.mp4"
