@@ -888,13 +888,28 @@ function toast(msg: string, err = false) {
 function escapeHtml(s: string) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!); }
 
 // ---- wire up --------------------------------------------------------------
-$('openBtn').onclick = async () => { const p = await pve.openFile(); if (p) importPath(p); };
+// File-level actions live behind the ☰ menu; it closes on pick or outside click.
+function closeMenu() {
+  $('menu').hidden = true;
+  $('menuBtn').setAttribute('aria-expanded', 'false');
+}
+$('menuBtn').onclick = (e) => {
+  e.stopPropagation();
+  const open = $('menu').hidden;
+  $('menu').hidden = !open;
+  $('menuBtn').setAttribute('aria-expanded', String(open));
+};
+document.addEventListener('click', () => closeMenu());
+$('menu').addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Escape') closeMenu(); });
+
+$('openBtn').onclick = async () => { closeMenu(); const p = await pve.openFile(); if (p) importPath(p); };
 $('chatSend').onclick = sendChat;
 $('chatInput').addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Enter') sendChat(); });
 $('chatInput').addEventListener('input', (e) => refreshOutbound((e.target as HTMLInputElement).value));
 $('undoBtn').onclick = async () => { const s = await pve.undo(); if (s) apply(s, { keepPlayhead: true }); };
 $('redoBtn').onclick = async () => { const s = await pve.redo(); if (s) apply(s, { keepPlayhead: true }); };
-$('exportBtn').onclick = doExport;
+$('exportBtn').onclick = () => { closeMenu(); void doExport(); };
 $('importErrorDismiss').onclick = () => {
   $('importError').hidden = true;
   if (!current) $('emptyState').hidden = false;
@@ -1014,7 +1029,7 @@ $('applyBackend').onclick = async () => {
   const emojiRow = $('emojiRow');
   for (const em of EMOJIS) { const b = document.createElement('button'); b.textContent = em; b.onclick = () => addEmojiOverlay(em); emojiRow.appendChild(b); }
   const sample = await pve.samplePath();
-  if (sample) { const btn = $('sampleBtn') as HTMLButtonElement; btn.hidden = false; btn.onclick = () => importPath(sample); }
+  if (sample) { const btn = $('sampleBtn') as HTMLButtonElement; btn.hidden = false; btn.onclick = () => { closeMenu(); importPath(sample); }; }
   // Auto-import a file passed on the command line (open-with / drag-to-dock).
   const initial = await pve.initialFile();
   if (initial) importPath(initial);

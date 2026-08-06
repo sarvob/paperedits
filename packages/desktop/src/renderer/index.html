@@ -15,11 +15,13 @@
       <div class="brand">▶ Prompt Video Editor <span class="mode" id="modeBadge" title="Click (or ⌘⇧D) to toggle debug mode">local · heuristic</span></div>
       <div class="file" id="fileName">no file</div>
       <div class="actions">
-        <button id="openBtn">Open video…</button>
-        <button id="sampleBtn" hidden>Load sample</button>
-        <button id="undoBtn" disabled title="Undo">↶</button>
-        <button id="redoBtn" disabled title="Redo">↷</button>
-        <button id="exportBtn" class="primary" disabled>Export</button>
+        <button id="menuBtn" title="Menu" aria-haspopup="true" aria-expanded="false">☰</button>
+        <div class="menu" id="menu" hidden>
+          <button id="openBtn">Open video…</button>
+          <button id="sampleBtn" hidden>Load sample</button>
+          <div class="menu-sep"></div>
+          <button id="exportBtn" disabled>Export…</button>
+        </div>
       </div>
     </header>
 
@@ -123,6 +125,11 @@
           <details class="acc acc-small" id="actionsPanel" open>
             <summary>Actions</summary>
             <div class="acc-body">
+              <div class="action-row">
+                <label>Edit</label>
+                <button id="undoBtn" class="sm-btn" disabled title="Undo">↶ Undo</button>
+                <button id="redoBtn" class="sm-btn" disabled title="Redo">↷ Redo</button>
+              </div>
               <div class="action-row">
                 <label for="goalSel">Goal</label>
                 <select id="goalSel" class="be-select sm">

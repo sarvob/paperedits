@@ -44,8 +44,22 @@ body {
   padding: 1px 8px;
   margin-left: 6px;
 }
-.file { color: var(--muted); flex: 1; }
-.actions { display: flex; gap: 8px; }
+.file { color: var(--muted); flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.actions { display: flex; gap: 8px; position: relative; }
+#menuBtn { font-size: 15px; line-height: 1; padding: 5px 10px; }
+.menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 50; min-width: 170px;
+  display: flex; flex-direction: column; padding: 5px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.55);
+}
+.menu button {
+  background: none; border: none; text-align: left; width: 100%;
+  padding: 7px 10px; border-radius: 7px; font-size: 12.5px; color: var(--text);
+}
+.menu button:hover:not(:disabled) { background: #2b3140; }
+.menu button:disabled { opacity: 0.4; }
+.menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
 
 button {
   background: var(--panel-2);
