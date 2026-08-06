@@ -48,13 +48,14 @@
           <!-- live preview with the overlay layer on top -->
           <div class="stage-wrap">
             <div class="stage" id="stage">
-              <video id="preview" muted playsinline></video>
+              <video id="preview" playsinline></video>
               <canvas id="previewCanvas"></canvas>
               <div class="overlay-layer" id="overlayLayer"></div>
               <div class="card-splash" id="cardSplash" hidden></div>
             </div>
             <div class="transport">
               <button id="playBtn" title="Play/Pause">▶</button>
+              <button id="muteBtn" title="Mute/Unmute">🔊</button>
               <input type="range" id="scrub" min="0" max="1000" value="0" />
               <span class="tc" id="tc">0:00 / 0:00</span>
             </div>

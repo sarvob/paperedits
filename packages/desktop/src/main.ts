@@ -138,7 +138,12 @@ function createWindow() {
     height: 820,
     backgroundColor: '#0f1115',
     title: 'Prompt Video Editor',
-    webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true },
+    webPreferences: {
+      preload: join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      // Allow the preview to play WITH audio without requiring a user gesture.
+      autoplayPolicy: 'no-user-gesture-required',
+    },
   });
   win.loadFile(join(__dirname, 'index.html'));
 }

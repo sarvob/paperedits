@@ -121,6 +121,8 @@ function segAt(t: number): SpanItem | null {
   const { items } = computeSpans(current.edl);
   return items.find((it) => t >= it.outStart && t < it.outEnd) ?? items[items.length - 1] ?? null;
 }
+let audioOn = true; // user's mute toggle; fast sections still auto-mute
+
 function syncVideoTo(t: number) {
   const it = segAt(t);
   const splash = $('cardSplash');
@@ -138,6 +140,9 @@ function syncVideoTo(t: number) {
   const expected = seg.sourceStart + (t - it.outStart) * seg.speed;
   if (Math.abs(v.currentTime - expected) > 0.25) v.currentTime = expected;
   v.playbackRate = clamp(seg.speed, 0.0625, 16);
+  // Match export audio semantics: fast sections (>3x) and explicitly muted
+  // segments are silent; everything else plays audio (unless the user muted).
+  v.muted = !audioOn || seg.speed > 3 || seg.audio === 'mute';
 }
 function tick(ts: number) {
   if (!playing) return;
@@ -738,6 +743,11 @@ $('importErrorDismiss').onclick = () => {
   if (!current) $('emptyState').hidden = false;
 };
 $('playBtn').onclick = playPause;
+$('muteBtn').onclick = () => {
+  audioOn = !audioOn;
+  $('muteBtn').textContent = audioOn ? '🔊' : '🔇';
+  syncVideoTo(playhead);
+};
 $('summaryRefresh').onclick = () => requestSummary(true);
 $('hlRefresh').onclick = () => requestHighlights(true);
 // Click anywhere on the tracks → seek there (the playhead follows).
