@@ -32,6 +32,9 @@ process.env.PATH = [...new Set([...(process.env.PATH ?? '').split(':').filter(Bo
 // software compositing makes the preview render reliably.
 app.disableHardwareAcceleration();
 
+// Names the macOS menu bar and the app's userData dir (defaults to "Electron").
+app.setName('PaperEdits');
+
 // A privileged scheme so the renderer can stream the user's local video into a
 // <video> element without disabling web security or widening the file: origin.
 protocol.registerSchemesAsPrivileged([
@@ -137,7 +140,7 @@ function createWindow() {
     width: 1280,
     height: 820,
     backgroundColor: '#0f1115',
-    title: 'Prompt Video Editor',
+    title: 'PaperEdits',
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
