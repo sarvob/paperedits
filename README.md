@@ -1,4 +1,4 @@
-# Prompt Video Editor
+# PaperEdits
 
 **Local-first, prompt-driven video editing. Your footage never leaves your machine.**
 

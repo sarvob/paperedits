@@ -1,9 +1,13 @@
 {
-  "name": "prompt-video-editor",
+  "name": "paperedits",
   "version": "0.0.1",
   "private": true,
   "description": "Local-first, prompt-driven video editor. Footage never leaves your machine.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sarvob/paperedits.git"
+  },
   "type": "module",
   "workspaces": [
     "packages/*"
