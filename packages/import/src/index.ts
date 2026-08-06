@@ -6,8 +6,10 @@ import { existsSync } from 'node:fs';
 import type { Analysis, AnalysisCache, Importer, ImportOptions, Word } from '@pve/core';
 import { audioLevels, hasAudioStream, scanContainer } from './scan.js';
 import { transcribe, type WhisperConfig } from './transcribe.js';
+import { findVisionModel, visualPass } from './visual.js';
 
 export { scanContainer, hasAudioStream, audioLevels } from './scan.js';
+export { visualPass, findVisionModel } from './visual.js';
 export { transcribe, findModel, DEFAULT_MODEL_NAMES } from './transcribe.js';
 export { renderToFile, hasDrawtext, type RenderResult } from './render-exec.js';
 export { runSystemChecks } from './system-checks.js';
@@ -65,8 +67,11 @@ export class FfmpegImporter implements Importer {
 
     const cached = await this.cache.get(fileHash);
     if (cached) {
+      // Cache-upgrade: analyses imported before the visual pass existed have no
+      // captions — run just that stage and re-save, instead of a full re-import.
+      const upgraded = await this.maybeVisualPass(path, cached, opts);
       opts.onProgress?.('done', 100);
-      return cached;
+      return upgraded;
     }
 
     opts.onProgress?.('scan', 5);
@@ -83,8 +88,7 @@ export class FfmpegImporter implements Importer {
       [levels, words] = await Promise.all([audioLevels(path), transcribe(path, this.cfg.whisper)]);
     }
 
-    opts.onProgress?.('segment', 90);
-    const analysis: Analysis = {
+    let analysis: Analysis = {
       fileHash,
       durationSec: scan.durationSec,
       hasAudio: audio,
@@ -92,12 +96,38 @@ export class FfmpegImporter implements Importer {
       audioLevels: levels,
       activityPerSec: scan.activityPerSec,
       sceneCuts: scan.sceneCuts,
-      detections: [], // P1: sparse visual pass (YOLOX)
-      captions: [], // P1: VLM captions
+      detections: [],
+      captions: [],
     };
 
+    analysis = await this.maybeVisualPass(path, analysis, opts);
+
+    opts.onProgress?.('segment', 95);
     await this.cache.put(analysis);
     opts.onProgress?.('done', 100);
     return analysis;
+  }
+
+  /**
+   * The sparse visual pass (local VLM keyframe captions). Skipped silently when
+   * no vision model is installed; failures never block an import.
+   */
+  private async maybeVisualPass(path: string, analysis: Analysis, opts: ImportOptions): Promise<Analysis> {
+    if (analysis.captions.length) return analysis; // already has vision
+    try {
+      const model = await findVisionModel();
+      if (!model) return analysis;
+      opts.onProgress?.('visual', 60);
+      const vis = await visualPass(path, analysis.durationSec, analysis.sceneCuts, {
+        model,
+        maxFrames: opts.maxCaptions ?? 48,
+        onProgress: (done, total) => opts.onProgress?.('visual', 60 + Math.round((done / total) * 30)),
+      });
+      const upgraded = { ...analysis, captions: vis.captions, detections: vis.detections };
+      await this.cache.put(upgraded);
+      return upgraded;
+    } catch {
+      return analysis;
+    }
   }
 }

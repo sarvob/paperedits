@@ -48,6 +48,11 @@ const importer = new FfmpegImporter();
 const heuristicBackend = new HeuristicBackend();
 let currentBackend: Backend = heuristicBackend;
 let currentBackendDetail = 'heuristic';
+/** Best available LOCAL backend — used for background jobs (summary,
+ * highlights, labels) so they stay free and egress-less even when the
+ * interactive backend is a remote API. */
+let localBackend: Backend = heuristicBackend;
+const backgroundBackend = (): Backend => (currentBackend.network ? localBackend : currentBackend);
 
 /**
  * The chat is the primary way to use the tool, so it must have a real model by
@@ -67,6 +72,7 @@ async function autoSelectBackend(): Promise<void> {
     const model = prefs.map((p) => models.find((m) => m.startsWith(p))).find(Boolean) ?? models[0]!;
     currentBackend = new OllamaBackend({ model });
     currentBackendDetail = `ollama · ${model}`;
+    localBackend = currentBackend;
   } catch {
     /* Ollama not running — stay on heuristic */
   }
@@ -268,7 +274,7 @@ ipcMain.handle('session:setSpeed', async (_e, entryId: string, speed: number) =>
 ipcMain.handle('session:summarize', async (_e, force: boolean) => {
   if (!session) return null;
   try {
-    return await session.summarize(currentBackend, !!force);
+    return await session.summarize(backgroundBackend(), !!force);
   } catch (err) {
     return { summary: '', moments: [], error: (err as Error).message };
   }
@@ -277,7 +283,7 @@ ipcMain.handle('session:summarize', async (_e, force: boolean) => {
 ipcMain.handle('session:highlights', async (_e, force: boolean) => {
   if (!session) return null;
   try {
-    const h = await session.getHighlights(currentBackend, !!force);
+    const h = await session.getHighlights(backgroundBackend(), !!force);
     // Attach segment timing so the UI can seek without recomputing.
     const byId = new Map(session.candidates.map((c) => [c.id, c]));
     return {
@@ -286,7 +292,7 @@ ipcMain.handle('session:highlights', async (_e, force: boolean) => {
         start: byId.get(x.id)?.start ?? 0,
         end: byId.get(x.id)?.end ?? 0,
       })),
-      source: currentBackend.name,
+      source: backgroundBackend().name,
     };
   } catch (err) {
     return { highlights: [], error: (err as Error).message };
