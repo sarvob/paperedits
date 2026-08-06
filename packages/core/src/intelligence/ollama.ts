@@ -66,7 +66,7 @@ export class OllamaBackend implements Backend {
   }
 
   async answer(ctx: AnswerContext): Promise<string> {
-    return (await this.chat(ANSWER_SYSTEM, buildAnswerPrompt(ctx.digest, ctx.summary, ctx.question), false)).trim();
+    return (await this.chat(ANSWER_SYSTEM, buildAnswerPrompt(ctx), false)).trim();
   }
 
   async highlights(digest: Digest): Promise<VideoHighlights> {

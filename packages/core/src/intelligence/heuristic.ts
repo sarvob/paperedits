@@ -67,6 +67,10 @@ export class HeuristicBackend implements Backend {
    */
   async answer(ctx: AnswerContext): Promise<string> {
     const q = ctx.question.toLowerCase();
+    // "why?" after an action → explain the action, never the video.
+    if (/^why\b|why (did|was|is)|explain (that|it|the last)/.test(q) && ctx.lastAction) {
+      return `Here's what happened: ${ctx.lastAction}`;
+    }
     const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
     const byId = new Map(ctx.digest.entries.map((e) => [e.id, e]));
     const hint = '\n\n(No AI model is active, so this is a rough cut from signal analysis — select Ollama or Anthropic API in the Intelligence panel for real answers.)';

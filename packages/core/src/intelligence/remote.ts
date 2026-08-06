@@ -95,7 +95,7 @@ export class RemoteBackend implements Backend {
   }
 
   async answer(ctx: AnswerContext): Promise<string> {
-    const prompt = buildAnswerPrompt(ctx.digest, ctx.summary, ctx.question);
+    const prompt = buildAnswerPrompt(ctx);
     if (!(await this.gate(prompt))) return 'send cancelled by user';
     const key = await this.cfg.getApiKey();
     if (!key) throw new Error('no API key available');

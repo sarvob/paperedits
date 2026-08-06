@@ -122,32 +122,93 @@ export class Session {
    * the primary model got wrong. This is what lets the right-hand chat both edit
    * and answer questions instead of silently no-opping.
    */
+  /** Rolling chat transcript so follow-ups ("why?", "that one") have context. */
+  chatLog: { role: 'user' | 'assistant'; text: string }[] = [];
+  /** One-line record of the last edit the agent performed — the referent of "why". */
+  lastAction: string | null = null;
+  /** A proposal awaiting the user's choice (e.g. an infeasible duration target). */
+  private pending: { targetSec: number; fastSpeed: number; totalSec: number; minSec: number } | null = null;
+
   async chat(backend: Backend, message: string, fallback?: Backend): Promise<ChatOutcome> {
-    // Questions route straight to Q&A — never to the edit path. This is what
-    // stops "what are the key highlights?" from being applied as a classify op.
+    this.chatLog.push({ role: 'user', text: message });
+    const out = await this.routeChat(backend, message, fallback);
+    this.chatLog.push({ role: 'assistant', text: out.kind === 'answer' ? out.text : out.interpretation });
+    if (this.chatLog.length > 16) this.chatLog.splice(0, this.chatLog.length - 16);
+    return out;
+  }
+
+  private async routeChat(backend: Backend, message: string, fallback?: Backend): Promise<ChatOutcome> {
+    const t = message.trim().toLowerCase();
+    const fmtD = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+    // --- chat commands -----------------------------------------------------
+    if (/^undo\b/.test(t)) {
+      const l = this.undo();
+      this.agentPlan = null;
+      return { kind: 'edit', ok: true, interpretation: l ? `Undone: "${l}".` : 'Nothing to undo.', edl: this.edl, usedFallback: false };
+    }
+    if (/^redo\b/.test(t)) {
+      const l = this.redo();
+      return { kind: 'edit', ok: true, interpretation: l ? `Redone: "${l}".` : 'Nothing to redo.', edl: this.edl, usedFallback: false };
+    }
+
+    // --- pending proposal: resolve the user's choice first -----------------
+    if (this.pending) {
+      const p = this.pending;
+      const pickSpeed = t.match(/(\d+(?:\.\d+)?)\s*x\b/);
+      const neededSpeed = Math.ceil(p.totalSec / p.targetSec);
+      if (/^(no|cancel|never ?mind|leave it|stop)\b/.test(t)) {
+        this.pending = null;
+        return { kind: 'answer', ok: true, text: 'Okay, cancelled — nothing was changed.' };
+      }
+      if (/^1\b/.test(t) || pickSpeed || /harder|faster speed|higher/.test(t)) {
+        this.pending = null;
+        const speed = pickSpeed ? Number(pickSpeed[1]) : neededSpeed;
+        return this.runTargetPlan(backend, p.targetSec, speed, 'compress');
+      }
+      if (/^2\b/.test(t) || /\bcut\b|remove|drop/.test(t)) {
+        this.pending = null;
+        return this.runTargetPlan(backend, p.targetSec, p.fastSpeed, 'cut');
+      }
+      if (/^3\b/.test(t) || /^(yes|y|ok|okay|accept|apply|go ahead|do it)\b/.test(t)) {
+        this.pending = null;
+        return this.runTargetPlan(backend, p.minSec + 1, p.fastSpeed, 'compress');
+      }
+      // Anything else: drop the proposal and treat it as a new message.
+      this.pending = null;
+    }
+
+    // --- questions → Q&A with conversation + action context ----------------
     if (isQuestion(message)) {
       const text = await this.answer(backend, message);
       return { kind: 'answer', ok: true, text };
     }
 
-    // Duration targets go to the deterministic planner (LLM ranks, code fits).
+    // --- duration targets → feasibility check, then plan or ask ------------
     const target = parseTargetDuration(message);
     if (target) {
-      const fmtD = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-      const r = await this.planTargetDuration(backend, target.targetSec, target.fastSpeed);
-      return {
-        kind: 'edit',
-        ok: true,
-        interpretation:
-          `Kept ${r.kept} key segments at 1×, compressed ${this.candidates.length - r.kept} to ` +
-          `${target.fastSpeed}× → new length ${fmtD(r.resultSec)} (target ${fmtD(target.targetSec)}). ` +
-          `The plan track shows each decision and why.`,
-        edl: this.edl,
-        usedFallback: false,
-        plan: r.plan,
-      };
+      const totalSec = this.candidates.reduce((a, c) => a + (c.end - c.start), 0);
+      const minSec = totalSec / target.fastSpeed;
+      if (target.targetSec < minSec) {
+        this.pending = { targetSec: target.targetSec, fastSpeed: target.fastSpeed, totalSec, minSec };
+        const needed = Math.ceil(totalSec / target.targetSec);
+        return {
+          kind: 'answer',
+          ok: true,
+          text:
+            `That target isn't reachable as asked: the source is ${fmtD(totalSec)}, so even with ` +
+            `EVERYTHING at ${target.fastSpeed}× the result is ${fmtD(minSec)} — above your ${fmtD(target.targetSec)} target.\n\n` +
+            `Options:\n` +
+            `1. Compress harder — about ${needed}× would fit (keeps everything, just faster)\n` +
+            `2. Cut the least important segments entirely and keep the best at 1× (undoable)\n` +
+            `3. Accept ${fmtD(minSec)} — apply everything at ${target.fastSpeed}×\n\n` +
+            `Reply 1, 2, or 3 (or e.g. "use ${needed}x"). I won't change anything until you choose.`,
+        };
+      }
+      return this.runTargetPlan(backend, target.targetSec, target.fastSpeed, 'compress');
     }
 
+    // --- free-form edits via the op DSL ------------------------------------
     let patch = null as Awaited<ReturnType<Session['proposePatch']>> | null;
     try {
       patch = await this.proposePatch(message, backend);
@@ -163,21 +224,38 @@ export class Session {
       const applied = applyOps(this.history.edl, mutating, { explicitIds: this.detectExplicitIds(message) });
       this.history.commit(normalize(applied, this.atoms, this.cfg.postprocess), message);
       this.log.push({ instruction: message, interpretation: p.interpretation });
+      this.lastAction = p.interpretation;
       return { kind: 'edit', ok: true, interpretation: p.interpretation, edl: this.history.edl, usedFallback };
     };
 
-    // 1) primary as an edit
     const primary = tryApply(patch, false);
     if (primary) return primary;
-    // 2) if the primary had ops but they were invalid, retry the edit with fallback
     if (fallback && patch && patch.ops.length) {
       const fp = await this.proposePatch(message, fallback).catch(() => null);
       const viaFallback = tryApply(fp, true);
       if (viaFallback) return viaFallback;
     }
-    // 3) no valid edit → answer it as a question
     const text = await this.answer(backend, message);
     return { kind: 'answer', ok: true, text };
+  }
+
+  /** Apply a duration-target plan (mode: compress rest, or cut rest) + record why. */
+  private async runTargetPlan(
+    backend: Backend,
+    targetSec: number,
+    fastSpeed: number,
+    mode: 'compress' | 'cut',
+  ): Promise<ChatOutcome> {
+    const fmtD = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+    const r = await this.planTargetDuration(backend, targetSec, fastSpeed, mode);
+    const rest = this.candidates.length - r.kept;
+    const interpretation =
+      `Kept ${r.kept} key segment${r.kept === 1 ? '' : 's'} at 1× and ` +
+      (mode === 'cut' ? `cut the other ${rest}` : `compressed the other ${rest} to ${fastSpeed}×`) +
+      ` → new length ${fmtD(r.resultSec)} (target ${fmtD(targetSec)}). ` +
+      `The plan track under the audio shows each decision and why. Say "undo" to revert.`;
+    this.lastAction = interpretation;
+    return { kind: 'edit', ok: true, interpretation, edl: this.edl, usedFallback: false, plan: r.plan };
   }
 
   /** Run one instruction through the loop. Returns the new EDL or the errors. */
@@ -293,6 +371,7 @@ export class Session {
     backend: Backend,
     targetSec: number,
     fastSpeed = 10,
+    mode: 'compress' | 'cut' = 'compress',
   ): Promise<{ plan: AgentPlanItem[]; resultSec: number; kept: number }> {
     const hl = await this.getHighlights(backend).catch(() => ({ highlights: [] }) as VideoHighlights);
     const hlScore = new Map(hl.highlights.map((h) => [h.id, h.score]));
@@ -313,28 +392,36 @@ export class Session {
     const keep = new Set<string>();
     const totalWith = (k: Set<string>) =>
       this.candidates.reduce((a, c) => a + (k.has(c.id) ? c.end - c.start : (c.end - c.start) / fastSpeed), 0);
+    // In 'cut' mode removed segments cost 0 output time; in 'compress' mode
+    // they still cost len/fastSpeed — the fit accounts for the difference.
+    const costWith = (k: Set<string>) =>
+      mode === 'cut'
+        ? this.candidates.reduce((a, c) => a + (k.has(c.id) ? c.end - c.start : 0), 0)
+        : totalWith(k);
     for (const { c } of scored) {
       keep.add(c.id);
-      if (totalWith(keep) > targetSec) keep.delete(c.id);
+      if (costWith(keep) > targetSec) keep.delete(c.id);
     }
 
     const keepIds = [...keep];
     const fastIds = this.candidates.filter((c) => !keep.has(c.id)).map((c) => c.id);
     const ops: MutatingOp[] = [{ op: 'classify', definition: `target ≤ ${Math.round(targetSec)}s`, keyIds: keepIds }];
     if (keepIds.length) ops.push({ op: 'retime', ids: keepIds, speed: 1 });
-    if (fastIds.length) ops.push({ op: 'retime', ids: fastIds, speed: fastSpeed });
+    if (fastIds.length) ops.push(mode === 'cut' ? { op: 'cut', ids: fastIds } : { op: 'retime', ids: fastIds, speed: fastSpeed });
 
     const applied = applyOps(this.history.edl, ops, {});
     const normalized = normalize(applied, this.atoms, this.cfg.postprocess);
-    this.history.commit(normalized, `fit under ${Math.round(targetSec)}s`);
+    this.history.commit(normalized, mode === 'cut' ? `cut to fit ${Math.round(targetSec)}s` : `fit under ${Math.round(targetSec)}s`);
 
-    this.agentPlan = this.candidates.map((c) => ({
-      id: c.id,
-      speed: keep.has(c.id) ? 1 : fastSpeed,
-      reason: keep.has(c.id)
-        ? hlWhy.get(c.id) ?? `Ranked #${rank.get(c.id)} by importance — kept at 1×`
-        : `Rank #${rank.get(c.id)} — below the cut for the time budget, compressed ${fastSpeed}×`,
-    }));
+    this.agentPlan = this.candidates
+      .filter((c) => mode !== 'cut' || keep.has(c.id))
+      .map((c) => ({
+        id: c.id,
+        speed: keep.has(c.id) ? 1 : fastSpeed,
+        reason: keep.has(c.id)
+          ? hlWhy.get(c.id) ?? `Ranked #${rank.get(c.id)} by importance — kept at 1×`
+          : `Rank #${rank.get(c.id)} — below the cut for the time budget, compressed ${fastSpeed}×`,
+      }));
     return { plan: this.agentPlan, resultSec: outputDuration(this.history.edl), kept: keepIds.length };
   }
 
@@ -370,7 +457,15 @@ export class Session {
    */
   async answer(backend: Backend, question: string): Promise<string> {
     const summary = this.summaryCache?.summary;
-    const ctx = { digest: this.digest, summary, question, history: this.log.slice(-5) };
+    const ctx = {
+      digest: this.digest,
+      summary,
+      question,
+      history: this.log.slice(-5),
+      // Follow-ups like "why?" resolve against the conversation + last action.
+      conversation: this.chatLog.slice(-8),
+      lastAction: this.lastAction ?? undefined,
+    };
     if (backend.answer) {
       try {
         const a = await backend.answer(ctx);

@@ -46,6 +46,10 @@ export interface AnswerContext {
   summary?: string;
   question: string;
   history: HistoryEntry[];
+  /** recent chat turns, oldest→newest, so follow-ups like "why?" make sense */
+  conversation?: { role: 'user' | 'assistant'; text: string }[];
+  /** what the agent last DID to the edit (the referent of "that"/"why") */
+  lastAction?: string;
 }
 
 export { HeuristicBackend } from './heuristic.js';

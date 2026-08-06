@@ -72,7 +72,7 @@ export class AnthropicBackend implements Backend {
   }
 
   async answer(ctx: AnswerContext): Promise<string> {
-    const prompt = buildAnswerPrompt(ctx.digest, ctx.summary, ctx.question);
+    const prompt = buildAnswerPrompt(ctx);
     if (!(await this.gate(prompt))) return 'send cancelled by user';
     return (await this.ask(ANSWER_SYSTEM, prompt, 1500)).trim();
   }

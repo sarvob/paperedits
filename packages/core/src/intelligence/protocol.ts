@@ -111,19 +111,34 @@ export function parseHighlightsReply(raw: string): VideoHighlights {
 // Q&A — answering questions about the video (not edits)
 // ---------------------------------------------------------------------------
 
-export const ANSWER_SYSTEM = `You answer questions about a video using the digest
-of its segments (speech, activity, detected objects) and an optional summary.
-Be concise and specific. Cite timestamps (m:ss) when useful. If the digest does
-not contain the answer, say so briefly. Plain text, no JSON, no markdown headers.`;
+export const ANSWER_SYSTEM = `You are the assistant inside a video editor. You
+answer questions using the video digest (speech, activity, objects), the
+conversation so far, and LAST ACTION — the edit you (the assistant) just
+performed. When the user says "why?", "that", or "it", they almost always mean
+LAST ACTION or the previous turn — answer about the action, not the video, in
+that case. Be concise and specific; cite timestamps (m:ss) when useful. If you
+don't have the answer, say so briefly. Plain text, no JSON, no markdown headers.`;
 
-/** Build the Q&A payload: summary (if any) + digest + the question. */
-export function buildAnswerPrompt(digest: Digest, summary: string | undefined, question: string): string {
+/** Build the Q&A payload: conversation + last action + digest + the question. */
+export function buildAnswerPrompt(ctx: {
+  digest: Digest;
+  summary?: string;
+  question: string;
+  conversation?: { role: 'user' | 'assistant'; text: string }[];
+  lastAction?: string;
+}): string {
+  const convo = (ctx.conversation ?? [])
+    .slice(-6)
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
+    .join('\n');
   return [
-    summary ? `SUMMARY: ${summary}\n` : '',
-    `DIGEST (${digest.entries.length} segments, ${Math.round(digest.durationSec)}s):`,
-    digestToPrompt(digest),
+    ctx.summary ? `SUMMARY: ${ctx.summary}\n` : '',
+    ctx.lastAction ? `LAST ACTION (what you just did to the edit): ${ctx.lastAction}\n` : '',
+    convo ? `CONVERSATION SO FAR:\n${convo}\n` : '',
+    `DIGEST (${ctx.digest.entries.length} segments, ${Math.round(ctx.digest.durationSec)}s):`,
+    digestToPrompt(ctx.digest),
     '',
-    `QUESTION: ${question}`,
+    `QUESTION: ${ctx.question}`,
   ].join('\n');
 }
 
