@@ -3,6 +3,7 @@ import type { AnswerContext, Backend, PlanContext } from './index.js';
 import {
   ANSWER_SYSTEM,
   buildAnswerPrompt,
+  sanitizeAnswer,
   buildHighlightsPrompt,
   buildOutboundText,
   buildSummaryPrompt,
@@ -66,7 +67,7 @@ export class OllamaBackend implements Backend {
   }
 
   async answer(ctx: AnswerContext): Promise<string> {
-    return (await this.chat(ANSWER_SYSTEM, buildAnswerPrompt(ctx), false)).trim();
+    return sanitizeAnswer(await this.chat(ANSWER_SYSTEM, buildAnswerPrompt(ctx), false));
   }
 
   async highlights(digest: Digest): Promise<VideoHighlights> {

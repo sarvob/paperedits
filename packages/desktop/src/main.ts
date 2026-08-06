@@ -61,7 +61,10 @@ async function autoSelectBackend(): Promise<void> {
     const data = (await res.json()) as { models?: { name: string }[] };
     const models = (data.models ?? []).map((m) => m.name);
     if (!models.length) return;
-    const model = models.find((m) => m.startsWith('llama3.2')) ?? models[0]!;
+    // Prefer the most capable installed model — 7B-class models answer far
+    // more reliably than 3B (no scaffold leakage, better ranking).
+    const prefs = ['qwen2.5', 'llama3.1', 'mistral', 'llama3.2'];
+    const model = prefs.map((p) => models.find((m) => m.startsWith(p))).find(Boolean) ?? models[0]!;
     currentBackend = new OllamaBackend({ model });
     currentBackendDetail = `ollama · ${model}`;
   } catch {

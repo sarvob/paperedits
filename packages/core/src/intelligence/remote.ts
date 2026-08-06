@@ -3,6 +3,7 @@ import type { AnswerContext, Backend, PlanContext } from './index.js';
 import {
   ANSWER_SYSTEM,
   buildAnswerPrompt,
+  sanitizeAnswer,
   buildOutboundText,
   buildSummaryPrompt,
   parseModelReply,
@@ -114,6 +115,6 @@ export class RemoteBackend implements Backend {
     });
     if (!res.ok) throw new Error(`provider returned ${res.status} ${res.statusText}`);
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    return (data.choices?.[0]?.message?.content ?? '').trim();
+    return sanitizeAnswer(data.choices?.[0]?.message?.content ?? '');
   }
 }

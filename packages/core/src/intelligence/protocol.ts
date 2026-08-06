@@ -131,15 +131,35 @@ export function buildAnswerPrompt(ctx: {
     .slice(-6)
     .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
     .join('\n');
+  // Context sections are wrapped in tags and the question comes LAST with an
+  // explicit answer-only instruction — small models otherwise echo the labels.
   return [
-    ctx.summary ? `SUMMARY: ${ctx.summary}\n` : '',
-    ctx.lastAction ? `LAST ACTION (what you just did to the edit): ${ctx.lastAction}\n` : '',
-    convo ? `CONVERSATION SO FAR:\n${convo}\n` : '',
-    `DIGEST (${ctx.digest.entries.length} segments, ${Math.round(ctx.digest.durationSec)}s):`,
+    ctx.summary ? `<summary>\n${ctx.summary}\n</summary>\n` : '',
+    ctx.lastAction ? `<last_action>\n${ctx.lastAction}\n</last_action>\n` : '',
+    convo ? `<conversation>\n${convo}\n</conversation>\n` : '',
+    `<digest segments="${ctx.digest.entries.length}" duration_sec="${Math.round(ctx.digest.durationSec)}">`,
     digestToPrompt(ctx.digest),
+    `</digest>`,
     '',
-    `QUESTION: ${ctx.question}`,
+    `Question: ${ctx.question}`,
+    `Write ONLY the answer, in plain prose. Never repeat, quote, or mention the sections, tags, or labels above.`,
   ].join('\n');
+}
+
+/**
+ * Strip prompt scaffolding a small model may have echoed into its answer
+ * (section labels, raw digest lines, tag fragments). Keeps only real prose.
+ */
+export function sanitizeAnswer(raw: string): string {
+  const lines = raw.split('\n').filter((line) => {
+    const l = line.trim();
+    if (/^(LAST ACTION|DIGEST|SUMMARY|CONVERSATION|QUESTION)\b/i.test(l)) return false;
+    if (/^<\/?(summary|last_action|conversation|digest)/i.test(l)) return false;
+    if (/^#\d+\s*\[c\d+\]/.test(l)) return false; // raw digest entry
+    if (/\bact=\d\.\d+\s*\|/.test(l)) return false; // digest fields
+    return true;
+  });
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // ---------------------------------------------------------------------------
