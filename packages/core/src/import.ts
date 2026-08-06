@@ -18,6 +18,12 @@ export interface ImportOptions {
   /** cap on VLM-captioned keyframes per file (budget guard) */
   maxCaptions?: number;
   onProgress?: (stage: ImportStage, pct: number) => void;
+  /**
+   * Fired when the background visual pass finishes AFTER analyze() returned —
+   * the analysis now carries frame captions/detections and is re-cached. Lets
+   * the app start editing on the transcript immediately and gain vision later.
+   */
+  onEnriched?: (analysis: Analysis) => void;
 }
 
 export type ImportStage = 'scan' | 'transcribe' | 'visual' | 'caption' | 'segment' | 'done';

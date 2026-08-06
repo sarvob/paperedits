@@ -52,9 +52,12 @@ async function activityFromPackets(input: string, durationSec: number): Promise<
  */
 async function sceneCuts(input: string): Promise<number[]> {
   // showinfo prints lines like: pts_time:12.345 ... on selected (scene) frames.
+  // Downscale + sample at 8fps before the scene filter: cut detection is about
+  // large frame-to-frame change, which survives 320px/8fps intact, while decode
+  // cost drops ~5-10× (this was the slow half of the container scan).
   const { stderr } = await exec('ffmpeg', [
     '-i', input,
-    '-filter:v', "select='gt(scene,0.4)',showinfo",
+    '-filter:v', "fps=8,scale=320:-2,select='gt(scene,0.4)',showinfo",
     '-an', '-f', 'null', '-',
   ]).catch((e: Error) => ({ stderr: e.message, stdout: '' }));
 

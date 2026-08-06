@@ -23,6 +23,7 @@ interface PveApi {
   initialFile(): Promise<string | null>;
   import(path: string): Promise<{ ok: boolean; error?: string } & Partial<Snapshot>>;
   onImportProgress(cb: (p: { stage: string; pct: number }) => void): () => void;
+  onImportEnriched(cb: (s: Snapshot) => void): () => void;
   prompt(i: string): Promise<{ ok: boolean; rejected?: boolean; errors?: string[]; interpretation?: string } & Partial<Snapshot>>;
   undo(): Promise<Snapshot | null>;
   redo(): Promise<Snapshot | null>;
@@ -764,6 +765,16 @@ $('addText').onclick = addTextOverlay;
 $('stage').addEventListener('mousedown', (e) => { const id = (e.target as HTMLElement).id; if (id === 'previewCanvas' || id === 'overlayLayer') selectOverlay(null); });
 // Repaint the canvas whenever the decode source produces a new frame.
 for (const ev of ['seeked', 'loadeddata', 'canplay']) video().addEventListener(ev, drawFrame);
+
+// Background visual pass finished: the digest now carries frame captions.
+// Refresh views without disturbing the playhead, edits, or chat.
+pve.onImportEnriched((s) => {
+  apply(s, { keepPlayhead: true });
+  $('outbound').textContent = s.digestText || '';
+  toast('👁 Frame captions added — the agent can now see the video');
+  requestSummary(true);
+  requestHighlights(true);
+});
 
 // ---- backend selector ------------------------------------------------------
 let modelsLoaded = false;

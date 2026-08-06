@@ -18,6 +18,11 @@ contextBridge.exposeInMainWorld('pve', {
     ipcRenderer.on('import:progress', listener);
     return () => ipcRenderer.removeListener('import:progress', listener);
   },
+  onImportEnriched: (cb: (snapshot: unknown) => void) => {
+    const listener = (_e: unknown, s: unknown) => cb(s);
+    ipcRenderer.on('import:enriched', listener);
+    return () => ipcRenderer.removeListener('import:enriched', listener);
+  },
   prompt: (instruction: string) => ipcRenderer.invoke('session:prompt', instruction),
   undo: () => ipcRenderer.invoke('session:undo'),
   redo: () => ipcRenderer.invoke('session:redo'),

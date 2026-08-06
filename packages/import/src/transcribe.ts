@@ -62,39 +62,88 @@ interface WhisperJson {
   transcription: { offsets: { from: number; to: number }; text: string }[];
 }
 
+/** Run whisper-cli on one wav file; returns words with LOCAL timestamps. */
+async function runWhisper(bin: string, model: string, wav: string, outBase: string): Promise<Word[]> {
+  await exec(bin, [
+    '-m', model,
+    '-f', wav,
+    '--max-len', '1',
+    '--split-on-word',
+    '--output-json',
+    '--output-file', outBase,
+    '--no-prints',
+  ]);
+  const json = JSON.parse(await readFile(`${outBase}.json`, 'utf8')) as WhisperJson;
+  const words: Word[] = [];
+  for (const seg of json.transcription ?? []) {
+    const text = seg.text.trim();
+    if (!text) continue;
+    words.push({ text, start: seg.offsets.from / 1000, end: seg.offsets.to / 1000 });
+  }
+  return words;
+}
+
+/** WAV duration from the 16k mono s16le byte size (32000 bytes/sec + header). */
+async function wavDuration(wav: string): Promise<number> {
+  const { size } = await import('node:fs/promises').then((fs) => fs.stat(wav));
+  return Math.max(0, (size - 44) / 32000);
+}
+
+/** Chunking parameters: 8-minute chunks, 2s head-overlap, ≤3 concurrent procs. */
+const STRIDE = 480;
+const OVERLAP = 2;
+const CONCURRENCY = 3;
+const PARALLEL_THRESHOLD = 600; // below 10 min, one process is simpler & fine
+
 /**
- * Transcribe to word-level `Word[]`. We pass `--max-len 1 --split-on-word` so
- * each JSON segment is a single word with millisecond offsets — the timing
- * granularity the segmentation pass needs for silence/sentence boundaries.
+ * Transcribe to word-level `Word[]`. Long files are split into 8-minute chunks
+ * transcribed by CONCURRENT whisper processes (≈2-3× wall-clock on multi-core),
+ * then merged: each chunk after the first starts OVERLAP seconds early, and
+ * words falling inside that head-overlap are dropped (the previous chunk owns
+ * them), so seams never duplicate or truncate words.
  */
 export async function transcribe(input: string, cfg: WhisperConfig = {}): Promise<Word[]> {
   const bin = resolveBin(cfg);
   const model = resolveModel(cfg);
   const dir = await mkdtemp(join(tmpdir(), 'pve-whisper-'));
   const wav = join(dir, 'audio.wav');
-  const outBase = join(dir, 'out');
 
   try {
     await extractAudio(input, wav);
-    await exec(bin, [
-      '-m', model,
-      '-f', wav,
-      '--max-len', '1',
-      '--split-on-word',
-      '--output-json',
-      '--output-file', outBase,
-      '--no-prints',
-    ]);
+    const dur = await wavDuration(wav);
 
-    const raw = await readFile(`${outBase}.json`, 'utf8');
-    const json = JSON.parse(raw) as WhisperJson;
-    const words: Word[] = [];
-    for (const seg of json.transcription ?? []) {
-      const text = seg.text.trim();
-      if (!text) continue;
-      words.push({ text, start: seg.offsets.from / 1000, end: seg.offsets.to / 1000 });
+    if (dur <= PARALLEL_THRESHOLD) {
+      return await runWhisper(bin, model, wav, join(dir, 'out'));
     }
-    return words;
+
+    // Cut chunk wavs (stream-copy, near-instant), then run a small worker pool.
+    const chunks: { start: number; wav: string; out: string }[] = [];
+    for (let i = 0; i * STRIDE < dur; i++) {
+      const start = Math.max(0, i * STRIDE - (i > 0 ? OVERLAP : 0));
+      const len = STRIDE + (i > 0 ? OVERLAP : 0);
+      const cwav = join(dir, `c${i}.wav`);
+      await exec('ffmpeg', ['-y', '-ss', String(start), '-t', String(len), '-i', wav, '-c', 'copy', cwav]);
+      chunks.push({ start, wav: cwav, out: join(dir, `o${i}`) });
+    }
+
+    const results: Word[][] = new Array(chunks.length);
+    let next = 0;
+    let done = 0;
+    const worker = async () => {
+      for (;;) {
+        const i = next++;
+        if (i >= chunks.length) return;
+        const c = chunks[i]!;
+        const local = await runWhisper(bin, model, c.wav, c.out);
+        results[i] = local
+          .filter((w) => i === 0 || w.start >= OVERLAP) // head-overlap belongs to prev chunk
+          .map((w) => ({ text: w.text, start: w.start + c.start, end: w.end + c.start }));
+        done++;
+        cfg.onProgress?.(Math.round((done / chunks.length) * 100));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, chunks.length) }, worker));
+    return results.flat().sort((a, b) => a.start - b.start);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

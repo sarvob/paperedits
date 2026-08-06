@@ -67,28 +67,37 @@ export class FfmpegImporter implements Importer {
 
     const cached = await this.cache.get(fileHash);
     if (cached) {
-      // Cache-upgrade: analyses imported before the visual pass existed have no
-      // captions — run just that stage and re-save, instead of a full re-import.
-      const upgraded = await this.maybeVisualPass(path, cached, opts);
+      // Return instantly; if this cache predates the visual pass, captions are
+      // added in the background and surfaced via onEnriched.
+      this.enrichInBackground(path, cached, opts);
       opts.onProgress?.('done', 100);
-      return upgraded;
+      return cached;
     }
 
     opts.onProgress?.('scan', 5);
-    const scan = await scanContainer(path);
+    // Every stage is independent — run the container scan and the whole audio
+    // pipeline (loudness + chunked-parallel whisper) concurrently.
+    const [scan, audioResult] = await Promise.all([
+      scanContainer(path),
+      (async () => {
+        // Screen recordings and silent clips have no audio stream — detect and
+        // skip transcription cleanly rather than failing in whisper.
+        const audio = await hasAudioStream(path);
+        if (!audio) return { audio, words: [] as Word[], levels: [] as number[] };
+        opts.onProgress?.('transcribe', 20);
+        const [levels, words] = await Promise.all([
+          audioLevels(path),
+          transcribe(path, {
+            ...this.cfg.whisper,
+            onProgress: (p) => opts.onProgress?.('transcribe', 20 + Math.round(p * 0.65)),
+          }),
+        ]);
+        return { audio, words, levels };
+      })(),
+    ]);
+    const { audio, words, levels } = audioResult;
 
-    // Screen recordings and silent clips have no audio stream — extracting audio
-    // for whisper would fail, so detect and skip transcription cleanly.
-    const audio = await hasAudioStream(path);
-    let words: Word[] = [];
-    let levels: number[] = [];
-    if (audio) {
-      opts.onProgress?.('transcribe', 30);
-      // Loudness curve (fast) + transcript (slow) in parallel.
-      [levels, words] = await Promise.all([audioLevels(path), transcribe(path, this.cfg.whisper)]);
-    }
-
-    let analysis: Analysis = {
+    const analysis: Analysis = {
       fileHash,
       durationSec: scan.durationSec,
       hasAudio: audio,
@@ -100,34 +109,37 @@ export class FfmpegImporter implements Importer {
       captions: [],
     };
 
-    analysis = await this.maybeVisualPass(path, analysis, opts);
-
     opts.onProgress?.('segment', 95);
     await this.cache.put(analysis);
     opts.onProgress?.('done', 100);
+    // Vision runs AFTER the import returns — the user edits on the transcript
+    // now; captions arrive minutes later via onEnriched.
+    this.enrichInBackground(path, analysis, opts);
     return analysis;
   }
 
   /**
-   * The sparse visual pass (local VLM keyframe captions). Skipped silently when
-   * no vision model is installed; failures never block an import.
+   * The sparse visual pass (local VLM keyframe captions), fire-and-forget.
+   * Skipped silently when no vision model is installed or captions exist;
+   * failures never surface — vision is an enrichment, not a dependency.
    */
-  private async maybeVisualPass(path: string, analysis: Analysis, opts: ImportOptions): Promise<Analysis> {
-    if (analysis.captions.length) return analysis; // already has vision
-    try {
-      const model = await findVisionModel();
-      if (!model) return analysis;
-      opts.onProgress?.('visual', 60);
-      const vis = await visualPass(path, analysis.durationSec, analysis.sceneCuts, {
-        model,
-        maxFrames: opts.maxCaptions ?? 48,
-        onProgress: (done, total) => opts.onProgress?.('visual', 60 + Math.round((done / total) * 30)),
-      });
-      const upgraded = { ...analysis, captions: vis.captions, detections: vis.detections };
-      await this.cache.put(upgraded);
-      return upgraded;
-    } catch {
-      return analysis;
-    }
+  private enrichInBackground(path: string, analysis: Analysis, opts: ImportOptions): void {
+    if (analysis.captions.length) return;
+    void (async () => {
+      try {
+        const model = await findVisionModel();
+        if (!model) return;
+        const vis = await visualPass(path, analysis.durationSec, analysis.sceneCuts, {
+          model,
+          maxFrames: opts.maxCaptions ?? 48,
+        });
+        if (!vis.captions.length) return;
+        const upgraded = { ...analysis, captions: vis.captions, detections: vis.detections };
+        await this.cache.put(upgraded);
+        opts.onEnriched?.(upgraded);
+      } catch {
+        /* enrichment is best-effort */
+      }
+    })();
   }
 }

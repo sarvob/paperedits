@@ -163,6 +163,13 @@ ipcMain.handle('session:import', async (e, path: string) => {
   try {
     const analysis = await importer.analyze(path, {
       onProgress: (stage, pct) => e.sender.send('import:progress', { stage, pct }),
+      // The visual pass finishes AFTER import returns: fold captions into the
+      // live session (EDL/chat/undo untouched) and tell the renderer.
+      onEnriched: (enriched) => {
+        if (!session || session.analysis.fileHash !== enriched.fileHash) return;
+        session.applyVisual(enriched.captions, enriched.detections);
+        if (!e.sender.isDestroyed()) e.sender.send('import:enriched', snapshot());
+      },
     });
     session = new Session(analysis);
     sourcePath = path;

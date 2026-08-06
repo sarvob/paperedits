@@ -83,9 +83,11 @@ export function isQuestion(message: string): boolean {
  */
 export class Session {
   readonly analysis: Analysis;
+  // digest is rebuilt in place when the background visual pass lands (see
+  // applyVisual) — segmentation and the EDL never change, only digest richness.
   readonly atoms: Atom[];
   readonly candidates: Candidate[];
-  readonly digest: Digest;
+  digest: Digest;
   private readonly history: History;
   private readonly tools: ReadTools;
   private readonly log: HistoryEntry[] = [];
@@ -288,6 +290,26 @@ export class Session {
     this.history.commit(normalized, instruction);
     this.log.push({ instruction, interpretation: patch.interpretation });
     return { ok: true, edl: normalized, interpretation: patch.interpretation };
+  }
+
+  /**
+   * Absorb the background visual pass into a LIVE session: candidates gain
+   * captions/objects, the digest is rebuilt, and stale summary/highlights
+   * caches are dropped — while the EDL, undo history, and chat all survive
+   * untouched (captions never affect segmentation boundaries).
+   */
+  applyVisual(captions: { at: number; text: string }[], detections: { at: number; labels: string[] }[]): void {
+    this.analysis.captions = captions;
+    this.analysis.detections = detections;
+    for (const c of this.candidates) {
+      c.objects = [
+        ...new Set(detections.filter((d) => d.at >= c.start && d.at < c.end).flatMap((d) => d.labels)),
+      ];
+      c.caption = captions.find((x) => x.at >= c.start && x.at < c.end)?.text;
+    }
+    this.digest = buildDigest(this.analysis.fileHash, this.analysis.durationSec, this.candidates);
+    this.summaryCache = null;
+    this.highlightsCache = null;
   }
 
   /** Mark an entry as hand-adjusted so later prompts leave it alone. */
