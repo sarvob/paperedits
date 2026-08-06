@@ -26,8 +26,8 @@ interface PveApi {
   onImportEnriched(cb: (s: Snapshot) => void): () => void;
   onSummaryPartial(cb: (p: { summary: string; coveredSec: number; totalSec: number }) => void): () => void;
   prompt(i: string): Promise<{ ok: boolean; rejected?: boolean; errors?: string[]; interpretation?: string } & Partial<Snapshot>>;
-  undo(): Promise<Snapshot | null>;
-  redo(): Promise<Snapshot | null>;
+  undo(): Promise<(Snapshot & { label?: string }) | null>;
+  redo(): Promise<(Snapshot & { label?: string }) | null>;
   setSpeed(id: string, speed: number): Promise<Snapshot | null>;
   outbound(i: string): Promise<{ network: boolean; text: string }>;
   chat(message: string): Promise<{ ok: boolean; kind?: 'edit' | 'answer'; text?: string; usedFallback?: boolean; error?: string } & Partial<Snapshot>>;
@@ -215,15 +215,80 @@ function renderOverlayLayer(s: Snapshot) {
     const el = document.createElement('div');
     el.className = `ov${ov.box ? ' box' : ''}${ov.id === selectedOverlay ? ' selected' : ''}`;
     el.dataset.id = ov.id;
-    el.textContent = ov.content;
     el.style.left = `${ov.x * 100}%`;
     el.style.top = `${ov.y * 100}%`;
     el.style.fontSize = `${ov.size * stageH}px`;
     if (ov.color) el.style.color = ov.color;
+
+    // Text lives in its own span so it can be edited in place without the
+    // delete handle ending up inside the editable region.
+    const txt = document.createElement('span');
+    txt.className = 'ov-txt';
+    txt.textContent = ov.content;
+    el.appendChild(txt);
+
+    // A selected overlay carries its own ✕ — deleting shouldn't require
+    // hunting for the sidebar list.
+    if (ov.id === selectedOverlay) {
+      const x = document.createElement('button');
+      x.className = 'ov-x';
+      x.textContent = '✕';
+      x.title = 'Delete this overlay (or press Delete)';
+      x.onmousedown = (e) => e.stopPropagation(); // never start a drag
+      x.onclick = (e) => { e.stopPropagation(); void deleteOverlay(ov.id); };
+      el.appendChild(x);
+    }
+    if (ov.kind === 'text') el.ondblclick = (e) => { e.stopPropagation(); beginEditOverlay(ov.id); };
     attachDrag(el, ov);
     layer.appendChild(el);
   }
   updateOverlayVisibility();
+}
+
+/** Remove an overlay from anywhere (preview ✕, sidebar ✕, Delete key). */
+async function deleteOverlay(id: string) {
+  const s2 = await pve.removeOverlay(id);
+  if (!s2) return;
+  selectedOverlay = null;
+  apply(s2, { keepPlayhead: true });
+  toast('Overlay removed — undo to bring it back');
+}
+
+/** Edit an overlay's text in place, right on the video. */
+function beginEditOverlay(id: string) {
+  const txt = $('overlayLayer').querySelector<HTMLElement>(`[data-id="${id}"] .ov-txt`);
+  if (!txt) return;
+  txt.contentEditable = 'true';
+  txt.classList.add('editing');
+  txt.focus();
+  const range = document.createRange();
+  range.selectNodeContents(txt);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+
+  let done = false;
+  const finish = async (commit: boolean) => {
+    if (done) return;
+    done = true;
+    txt.contentEditable = 'false';
+    txt.classList.remove('editing');
+    const value = (txt.textContent ?? '').trim();
+    if (commit && value) {
+      const s2 = await pve.updateOverlay(id, { content: value }, 'edit text');
+      if (s2) apply(s2, { keepPlayhead: true });
+    } else if (current) {
+      renderOverlayLayer(current); // discard the uncommitted edit
+    }
+  };
+  txt.onblur = () => void finish(true);
+  txt.onkeydown = (e) => {
+    // Enter commits, Escape reverts; both stop here so the global Delete
+    // handler never sees a keystroke meant for the text.
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); void finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); void finish(false); }
+  };
 }
 function updateOverlayVisibility() {
   if (!current) return;
@@ -238,6 +303,9 @@ function updateOverlayVisibility() {
 }
 function attachDrag(el: HTMLElement, ov: Overlay) {
   el.addEventListener('mousedown', (e) => {
+    // Don't hijack the delete handle or a caret placed in editable text.
+    const t = e.target as HTMLElement;
+    if (t.closest('.ov-x') || t.isContentEditable) return;
     e.preventDefault();
     selectOverlay(ov.id);
     const rect = $('stage').getBoundingClientRect();
@@ -325,11 +393,23 @@ function renderOverlayPanel(s: Snapshot) {
 
 async function addTextOverlay() {
   const snap = await pve.addOverlay({ kind: 'text', content: 'New text', x: 0.5, y: 0.5, size: 0.07, color: '#ffffff', box: true, anchor: { mode: 'output', start: Math.round(playhead * 10) / 10, duration: 3 } });
-  if (snap) { selectNewest(snap); apply(snap, { keepPlayhead: true }); }
+  if (!snap) return;
+  selectNewest(snap);
+  apply(snap, { keepPlayhead: true });
+  revealOverlayPanel();
+  // Type straight onto the video — the placeholder is pre-selected, so the
+  // first keystroke replaces it.
+  if (selectedOverlay) beginEditOverlay(selectedOverlay);
 }
 async function addEmojiOverlay(emoji: string) {
   const snap = await pve.addOverlay({ kind: 'emoji', content: emoji, x: 0.5, y: 0.4, size: 0.14, box: false, anchor: { mode: 'output', start: Math.round(playhead * 10) / 10, duration: 3 } });
-  if (snap) { selectNewest(snap); apply(snap, { keepPlayhead: true }); }
+  if (snap) { selectNewest(snap); apply(snap, { keepPlayhead: true }); revealOverlayPanel(); }
+}
+/** The Overlays list is useless while collapsed — open it when one is added. */
+function revealOverlayPanel() {
+  const p = $('overlayPanel') as HTMLDetailsElement;
+  p.hidden = false;
+  p.open = true;
 }
 function selectNewest(s: Snapshot) { selectedOverlay = s.edl.overlays[s.edl.overlays.length - 1]?.id ?? null; }
 
@@ -712,6 +792,9 @@ function renderHistory(s: Snapshot) {
 // ---- apply a snapshot ------------------------------------------------------
 function apply(s: Snapshot, opts: { keepPlayhead?: boolean } = {}) {
   current = s;
+  // Undo/redo can remove the selected overlay out from under us; a stale
+  // selection would keep drawing a ✕ for something that no longer exists.
+  if (selectedOverlay && !s.edl.overlays.some((o) => o.id === selectedOverlay)) selectedOverlay = null;
   if (s.agentPlan) agentPlan = s.agentPlan;
   $('fileName').textContent = s.sourcePath ? s.sourcePath.split('/').pop()! : 'no file';
   $('workspace').hidden = false;
@@ -910,8 +993,28 @@ $('openBtn').onclick = async () => { closeMenu(); const p = await pve.openFile()
 $('chatSend').onclick = sendChat;
 $('chatInput').addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Enter') sendChat(); });
 $('chatInput').addEventListener('input', (e) => refreshOutbound((e.target as HTMLInputElement).value));
-$('undoBtn').onclick = async () => { const s = await pve.undo(); if (s) apply(s, { keepPlayhead: true }); };
-$('redoBtn').onclick = async () => { const s = await pve.redo(); if (s) apply(s, { keepPlayhead: true }); };
+const doUndo = async () => { const s = await pve.undo(); if (s) { apply(s, { keepPlayhead: true }); toast(`Undid: ${s.label ?? 'last change'}`); } };
+const doRedo = async () => { const s = await pve.redo(); if (s) { apply(s, { keepPlayhead: true }); toast(`Redid: ${s.label ?? 'last change'}`); } };
+$('undoBtn').onclick = doUndo;
+$('redoBtn').onclick = doRedo;
+
+// Delete removes the selected overlay; Cmd/Ctrl+Z undoes. Both bail out while
+// the user is typing so they never eat a keystroke meant for a field.
+const isTyping = (t: EventTarget | null): boolean => {
+  const el = t as HTMLElement | null;
+  return !!el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName));
+};
+document.addEventListener('keydown', (e) => {
+  if (isTyping(e.target)) return;
+  const k = (e as KeyboardEvent).key;
+  if ((k === 'Delete' || k === 'Backspace') && selectedOverlay) {
+    e.preventDefault();
+    void deleteOverlay(selectedOverlay);
+  } else if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === 'z') {
+    e.preventDefault();
+    void (e.shiftKey ? doRedo() : doUndo());
+  }
+});
 $('exportBtn').onclick = () => { closeMenu(); void doExport(); };
 $('importErrorDismiss').onclick = () => {
   $('importError').hidden = true;

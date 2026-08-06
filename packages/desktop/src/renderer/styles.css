@@ -468,3 +468,18 @@ body.debug .debug-only { display: block; }
   text-shadow: 0 0 6px rgba(255, 213, 74, 0.45);
 }
 .hl-star:hover { color: #ffe694; }
+
+/* ---- overlay direct manipulation ----------------------------------------- */
+.ov .ov-txt { display: inline-block; outline: none; }
+.ov .ov-txt.editing {
+  outline: 1px dashed rgba(255,255,255,0.7); outline-offset: 2px;
+  min-width: 1ch; cursor: text; user-select: text;
+}
+.ov .ov-x {
+  position: absolute; top: -9px; right: -9px;
+  width: 18px; height: 18px; padding: 0; border-radius: 50%;
+  font-size: 10px; line-height: 18px; text-align: center;
+  background: var(--danger, #c0392b); color: #fff;
+  border: 1px solid rgba(0,0,0,0.45); cursor: pointer; z-index: 3;
+}
+.ov .ov-x:hover { filter: brightness(1.2); }
