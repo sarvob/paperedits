@@ -10,6 +10,9 @@ import {
   HIGHLIGHTS_SYSTEM,
   parseHighlightsReply,
   PARTIAL_SUMMARY_SYSTEM,
+  JUDGE_SYSTEM,
+  buildJudgePrompt,
+  parseAssessment,
   parseModelReply,
   parseSummaryReply,
   SUMMARY_SYSTEM,
@@ -77,5 +80,9 @@ export class OllamaBackend implements Backend {
 
   async summarizeText(text: string): Promise<string> {
     return sanitizeAnswer(await this.chat(PARTIAL_SUMMARY_SYSTEM, text, false));
+  }
+
+  async assess(transcript: string, summary: string) {
+    return parseAssessment(await this.chat(JUDGE_SYSTEM, buildJudgePrompt(transcript, summary)));
   }
 }

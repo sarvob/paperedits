@@ -109,11 +109,13 @@ export class Session {
 
   /** Ask a backend to propose a patch for an instruction (no apply). */
   async proposePatch(instruction: string, backend: Backend) {
+    // The goal rides along as context, not as part of the command itself.
+    const withGoal = this.goal ? `${instruction}\n(The user's overall goal for this video: ${this.goal})` : instruction;
     return backend.plan({
       digest: this.digest,
       edl: this.history.edl,
       history: this.log.slice(-5),
-      instruction,
+      instruction: withGoal,
       tools: this.tools,
     });
   }
@@ -128,6 +130,11 @@ export class Session {
   chatLog: { role: 'user' | 'assistant'; text: string }[] = [];
   /** One-line record of the last edit the agent performed — the referent of "why". */
   lastAction: string | null = null;
+  /** The user's stated job for this video ("podcast → highlight reel", …). */
+  goal: string | null = null;
+  setGoal(g: string | null): void {
+    this.goal = g?.trim() || null;
+  }
   /** A proposal awaiting the user's choice (e.g. an infeasible duration target). */
   private pending: { targetSec: number; fastSpeed: number; totalSec: number; minSec: number } | null = null;
 
@@ -347,6 +354,10 @@ export class Session {
   }
 
   private summaryCache: VideoSummary | null = null;
+  /** The cached overall summary text, if one has been computed. */
+  get currentSummary(): string | undefined {
+    return this.summaryCache?.summary || undefined;
+  }
 
   /**
    * Produce (and cache) a human summary of the video: a 1–2 sentence overview
@@ -487,6 +498,7 @@ export class Session {
       // Follow-ups like "why?" resolve against the conversation + last action.
       conversation: this.chatLog.slice(-8),
       lastAction: this.lastAction ?? undefined,
+      goal: this.goal ?? undefined,
     };
     if (backend.answer) {
       try {

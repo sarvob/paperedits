@@ -12,6 +12,9 @@ import {
   HIGHLIGHTS_SYSTEM,
   parseHighlightsReply,
   PARTIAL_SUMMARY_SYSTEM,
+  JUDGE_SYSTEM,
+  buildJudgePrompt,
+  parseAssessment,
   parseModelReply,
   parseSummaryReply,
   SUMMARY_SYSTEM,
@@ -82,5 +85,11 @@ export class AnthropicBackend implements Backend {
     const prompt = buildAnswerPrompt(ctx);
     if (!(await this.gate(prompt))) return 'send cancelled by user';
     return sanitizeAnswer(await this.ask(ANSWER_SYSTEM, prompt, 1500));
+  }
+
+  async assess(transcript: string, summary: string) {
+    const prompt = buildJudgePrompt(transcript, summary);
+    if (!(await this.gate(prompt))) throw new Error('send cancelled by user');
+    return parseAssessment(await this.ask(JUDGE_SYSTEM, prompt, 300));
   }
 }

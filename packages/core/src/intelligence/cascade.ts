@@ -88,4 +88,11 @@ export class CascadeBackend implements Backend {
     if (!b?.summarizeText) throw new Error('no backend can summarize text');
     return b.summarizeText(text);
   }
+
+  async assess(transcript: string, summary: string) {
+    // Judging favors QUALITY — use the most capable tier that can do it.
+    const b = [...this.steps].reverse().find((s) => !!s.backend.assess)?.backend;
+    if (!b?.assess) throw new Error('no backend can assess');
+    return b.assess(transcript, summary);
+  }
 }

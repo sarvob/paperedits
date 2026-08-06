@@ -28,6 +28,14 @@ contextBridge.exposeInMainWorld('pve', {
     ipcRenderer.on('summary:partial', listener);
     return () => ipcRenderer.removeListener('summary:partial', listener);
   },
+  onMetrics: (cb: (m: Record<string, number | string>) => void) => {
+    const listener = (_e: unknown, m: Record<string, number | string>) => cb(m);
+    ipcRenderer.on('metrics:update', listener);
+    return () => ipcRenderer.removeListener('metrics:update', listener);
+  },
+  metricsGet: () => ipcRenderer.invoke('metrics:get'),
+  judgeSummary: () => ipcRenderer.invoke('quality:judge'),
+  setGoal: (goal: string | null) => ipcRenderer.invoke('session:goal', goal),
   prompt: (instruction: string) => ipcRenderer.invoke('session:prompt', instruction),
   undo: () => ipcRenderer.invoke('session:undo'),
   redo: () => ipcRenderer.invoke('session:redo'),

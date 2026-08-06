@@ -171,6 +171,30 @@ ipcMain.handle('file:open', async () => {
  * if a new partial arrives mid-summarize, intermediate ones are skipped.
  */
 const partial = { draft: '', covered: 0, busy: false, queued: null as null | { text: string; covered: number; total: number }, gen: 0 };
+
+/**
+ * Debug-mode metrics: user-experience timings for the current file, measured
+ * from the moment import starts. Pushed to the renderer on every change.
+ */
+const metrics = {
+  videoSec: 0,
+  importMs: 0, // analyze() returned → timeline usable
+  firstPartialMs: 0, // first transcript chunk available
+  firstSummaryMs: 0, // first draft summary on screen
+  finalSummaryMs: 0, // full-transcript summary on screen
+  backend: '',
+  t0: 0,
+};
+function resetMetrics(): void {
+  metrics.videoSec = metrics.importMs = metrics.firstPartialMs = metrics.firstSummaryMs = metrics.finalSummaryMs = 0;
+  metrics.backend = '';
+  metrics.t0 = Date.now();
+}
+function pushMetrics(sender: Electron.WebContents): void {
+  metrics.backend = backgroundBackend().name;
+  const { t0: _t0, ...rest } = metrics;
+  if (!sender.isDestroyed()) sender.send('metrics:update', rest);
+}
 function fmtMin(s: number): string {
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 }
@@ -192,6 +216,10 @@ async function drainPartialSummary(sender: Electron.WebContents, gen: number): P
           partial.draft = draft;
           partial.covered = p.covered;
           if (!sender.isDestroyed()) sender.send('summary:partial', { summary: draft, coveredSec: p.covered, totalSec: p.total });
+          if (!metrics.firstSummaryMs) {
+            metrics.firstSummaryMs = Date.now() - metrics.t0;
+            pushMetrics(sender);
+          }
         }
       } catch {
         /* partial summaries are best-effort */
@@ -209,9 +237,14 @@ ipcMain.handle('session:import', async (e, path: string) => {
     partial.covered = 0;
     partial.queued = null;
     const gen = partial.gen;
+    resetMetrics();
     const analysis = await importer.analyze(path, {
       onProgress: (stage, pct) => e.sender.send('import:progress', { stage, pct }),
       onPartialTranscript: (words, coveredSec, totalSec) => {
+        if (!metrics.firstPartialMs) {
+          metrics.firstPartialMs = Date.now() - metrics.t0;
+          pushMetrics(e.sender);
+        }
         // Only the words BEYOND the last summarized point — keeps prompts small
         // (draft + delta), so partial summaries stay fast on any hardware.
         const delta = words.filter((w) => w.start >= partial.covered - 1);
@@ -229,6 +262,9 @@ ipcMain.handle('session:import', async (e, path: string) => {
     });
     session = new Session(analysis);
     sourcePath = path;
+    metrics.importMs = Date.now() - metrics.t0;
+    metrics.videoSec = analysis.durationSec;
+    pushMetrics(e.sender);
     return { ok: true, ...snapshot()! };
   } catch (err) {
     // Surface the real reason (missing binary, unreadable file, etc.).
@@ -339,12 +375,45 @@ ipcMain.handle('session:setSpeed', async (_e, entryId: string, speed: number) =>
   return snapshot();
 });
 
-ipcMain.handle('session:summarize', async (_e, force: boolean) => {
+ipcMain.handle('session:summarize', async (e, force: boolean) => {
   if (!session) return null;
   try {
-    return await session.summarize(backgroundBackend(), !!force);
+    const s = await session.summarize(backgroundBackend(), !!force);
+    if (!metrics.finalSummaryMs && s.summary) {
+      metrics.finalSummaryMs = Date.now() - metrics.t0;
+      pushMetrics(e.sender);
+    }
+    return s;
   } catch (err) {
     return { summary: '', moments: [], error: (err as Error).message };
+  }
+});
+
+ipcMain.handle('session:goal', async (_e, goal: string | null) => {
+  session?.setGoal(goal);
+  return { ok: true };
+});
+
+ipcMain.handle('metrics:get', async () => {
+  const { t0: _t0, ...rest } = metrics;
+  return { ...rest, backend: backgroundBackend().name };
+});
+
+/** Debug-mode LLM-as-judge: score the current summary against the transcript. */
+ipcMain.handle('quality:judge', async () => {
+  if (!session) return { error: 'no file imported' };
+  const summary = session.currentSummary;
+  if (!summary) return { error: 'no summary yet — wait for it or press ↻' };
+  // Judge with the SELECTED backend (may be remote/stronger), not the local
+  // background one — quality assessment wants the smartest brain available.
+  const be = currentBackend;
+  if (!be.assess) return { error: `backend "${be.name}" cannot judge` };
+  const transcript = session.analysis.words.map((w) => w.text).join(' ');
+  try {
+    const a = await be.assess(transcript, summary);
+    return { ...a, judge: be.name };
+  } catch (err) {
+    return { error: (err as Error).message };
   }
 });
 

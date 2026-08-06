@@ -12,7 +12,7 @@
   </head>
   <body>
     <header class="topbar">
-      <div class="brand">▶ Prompt Video Editor <span class="mode">local · heuristic</span></div>
+      <div class="brand">▶ Prompt Video Editor <span class="mode" id="modeBadge" title="Click (or ⌘⇧D) to toggle debug mode">local · heuristic</span></div>
       <div class="file" id="fileName">no file</div>
       <div class="actions">
         <button id="openBtn">Open video…</button>
@@ -22,6 +22,19 @@
         <button id="exportBtn" class="primary" disabled>Export</button>
       </div>
     </header>
+
+    <!-- Debug metrics strip: hidden unless body.debug (⌘⇧D / click the badge). -->
+    <div class="debugbar" id="debugBar">
+      <span class="dbg-item">video <b id="mVideo">–</b></span>
+      <span class="dbg-item">import <b id="mImport">–</b></span>
+      <span class="dbg-item">×realtime <b id="mRt">–</b></span>
+      <span class="dbg-item">1st transcript <b id="mPartial">–</b></span>
+      <span class="dbg-item">1st summary <b id="mFirstSum">–</b></span>
+      <span class="dbg-item">final summary <b id="mFinalSum">–</b></span>
+      <span class="dbg-item">brain <b id="mBackend">–</b></span>
+      <button id="judgeBtn" title="Score the summary against the transcript with the selected backend">Judge summary</button>
+      <span class="dbg-judge" id="judgeOut"></span>
+    </div>
 
     <main class="layout">
       <section class="editor">
@@ -65,6 +78,14 @@
               <span class="emoji-row" id="emojiRow"></span>
               <span class="ot-hint">drag an overlay in the preview to move it</span>
             </div>
+          </div>
+
+          <!-- Goal-first: what job is this video for? Seeds the agent's context. -->
+          <div class="goalbar" id="goalBar" hidden>
+            <span class="goal-label">Goal:</span>
+            <span class="goal-chips" id="goalChips"></span>
+            <input id="goalCustom" type="text" placeholder="describe it…" hidden />
+            <span class="goal-suggest" id="goalSuggest"></span>
           </div>
 
           <div class="summary" id="summary" hidden>
@@ -112,7 +133,7 @@
 
       <aside class="sidebar">
         <div class="sidebar-panels">
-          <details class="acc" open>
+          <details class="acc">
             <summary>Intelligence</summary>
             <div class="acc-body">
               <select id="backendSel" class="be-select">
@@ -156,12 +177,12 @@
             </div>
           </details>
 
-          <details class="acc">
+          <details class="acc debug-only">
             <summary>System</summary>
             <div class="acc-body"><ul class="checks" id="checks"></ul></div>
           </details>
 
-          <details class="acc">
+          <details class="acc debug-only">
             <summary>History</summary>
             <div class="acc-body"><ol class="history" id="history"></ol></div>
           </details>

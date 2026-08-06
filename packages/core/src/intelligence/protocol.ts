@@ -117,6 +117,31 @@ the summary: 1-2 sentences, plain prose. If a draft is provided, revise it to
 absorb the new content — do not mention the draft, the transcript, or that this
 is partial.`;
 
+export const JUDGE_SYSTEM = `You are a strict evaluator of video summaries.
+Given a transcript (possibly truncated) and a summary of that video, score the
+summary. Reply with ONLY JSON:
+{"faithfulness": 1-10, "coverage": 1-10, "clarity": 1-10, "critique": "one sentence on the biggest weakness"}
+faithfulness = no invented facts; coverage = captures the main content;
+clarity = readable, concrete, no filler.`;
+
+/** Parsed result of a summary-quality judgement. */
+export interface SummaryAssessment {
+  faithfulness: number;
+  coverage: number;
+  clarity: number;
+  critique: string;
+}
+
+export function parseAssessment(raw: string): SummaryAssessment {
+  const j = JSON.parse(raw) as Partial<SummaryAssessment>;
+  const n = (v: unknown) => Math.max(1, Math.min(10, Number(v) || 0));
+  return { faithfulness: n(j.faithfulness), coverage: n(j.coverage), clarity: n(j.clarity), critique: String(j.critique ?? '').slice(0, 300) };
+}
+
+export function buildJudgePrompt(transcript: string, summary: string): string {
+  return `TRANSCRIPT (may be truncated):\n${transcript.slice(0, 12000)}\n\nSUMMARY TO EVALUATE:\n${summary}`;
+}
+
 export const ANSWER_SYSTEM = `You are the assistant inside a video editor. You
 answer questions using the video digest (speech, activity, objects), the
 conversation so far, and LAST ACTION — the edit you (the assistant) just
@@ -132,6 +157,7 @@ export function buildAnswerPrompt(ctx: {
   question: string;
   conversation?: { role: 'user' | 'assistant'; text: string }[];
   lastAction?: string;
+  goal?: string;
 }): string {
   const convo = (ctx.conversation ?? [])
     .slice(-6)
@@ -140,6 +166,7 @@ export function buildAnswerPrompt(ctx: {
   // Context sections are wrapped in tags and the question comes LAST with an
   // explicit answer-only instruction — small models otherwise echo the labels.
   return [
+    ctx.goal ? `<user_goal>\n${ctx.goal}\n</user_goal>\n` : '',
     ctx.summary ? `<summary>\n${ctx.summary}\n</summary>\n` : '',
     ctx.lastAction ? `<last_action>\n${ctx.lastAction}\n</last_action>\n` : '',
     convo ? `<conversation>\n${convo}\n</conversation>\n` : '',

@@ -40,6 +40,8 @@ export interface Backend {
   highlights?(digest: Digest): Promise<VideoHighlights>;
   /** summarize a raw text snippet (used for progressive partial summaries) */
   summarizeText?(text: string): Promise<string>;
+  /** LLM-as-judge: score a summary against the transcript (debug/metrics) */
+  assess?(transcript: string, summary: string): Promise<import('./protocol.js').SummaryAssessment>;
 }
 
 /** Context for a Q&A turn (a question, not an edit request). */
@@ -52,6 +54,8 @@ export interface AnswerContext {
   conversation?: { role: 'user' | 'assistant'; text: string }[];
   /** what the agent last DID to the edit (the referent of "that"/"why") */
   lastAction?: string;
+  /** the user's stated job for this video, if they set one */
+  goal?: string;
 }
 
 export { HeuristicBackend } from './heuristic.js';

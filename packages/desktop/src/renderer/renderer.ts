@@ -41,7 +41,12 @@ interface PveApi {
   updateOverlay(id: string, patch: unknown, label: string): Promise<Snapshot | null>;
   removeOverlay(id: string): Promise<Snapshot | null>;
   export(out: string | null, overlayPngs: Record<string, string>): Promise<{ ok: boolean; output?: string; bytes?: number; seconds?: number; warn?: string; error?: string }>;
+  onMetrics(cb: (m: Metrics) => void): () => void;
+  metricsGet(): Promise<Metrics>;
+  judgeSummary(): Promise<{ faithfulness?: number; coverage?: number; clarity?: number; critique?: string; judge?: string; error?: string }>;
+  setGoal(goal: string | null): Promise<{ ok: boolean }>;
 }
+interface Metrics { videoSec: number; importMs: number; firstPartialMs: number; firstSummaryMs: number; finalSummaryMs: number; backend: string }
 declare global { interface Window { pve: PveApi } }
 const pve = window.pve;
 
@@ -540,6 +545,97 @@ function renderHighlights() {
   });
 }
 
+// ---- debug mode + metrics --------------------------------------------------
+function setDebug(on: boolean) {
+  document.body.classList.toggle('debug', on);
+  localStorage.setItem('pve-debug', on ? '1' : '');
+}
+$('modeBadge').onclick = () => setDebug(!document.body.classList.contains('debug'));
+document.addEventListener('keydown', (e) => {
+  if (e.metaKey && e.shiftKey && e.key.toLowerCase() === 'd') setDebug(!document.body.classList.contains('debug'));
+});
+if (localStorage.getItem('pve-debug')) setDebug(true);
+
+const ms = (v: number) => (v ? `${(v / 1000).toFixed(1)}s` : '–');
+function renderMetrics(m: Metrics) {
+  $('mVideo').textContent = m.videoSec ? fmt(m.videoSec) : '–';
+  $('mImport').textContent = ms(m.importMs);
+  $('mRt').textContent = m.videoSec && m.importMs ? `${(m.videoSec / (m.importMs / 1000)).toFixed(0)}×` : '–';
+  $('mPartial').textContent = ms(m.firstPartialMs);
+  $('mFirstSum').textContent = ms(m.firstSummaryMs);
+  $('mFinalSum').textContent = ms(m.finalSummaryMs);
+  $('mBackend').textContent = m.backend || '–';
+}
+pve.onMetrics(renderMetrics);
+$('judgeBtn').onclick = async () => {
+  const out = $('judgeOut');
+  out.textContent = 'judging…';
+  const r = await pve.judgeSummary();
+  out.textContent = r.error
+    ? `⚠ ${r.error}`
+    : `faithfulness ${r.faithfulness}/10 · coverage ${r.coverage}/10 · clarity ${r.clarity}/10 (${r.judge}) — ${r.critique}`;
+};
+
+// ---- goal-first flow -------------------------------------------------------
+// Picking a goal tells the agent what job this video is for, and surfaces
+// one-click starting actions for that job.
+const GOALS: { label: string; goal: string; suggest: string[] }[] = [
+  { label: '🎙 Podcast', goal: 'This is a podcast episode; the user wants shareable highlights and a tight listen.',
+    suggest: ['make a 5 minute highlight cut', 'what are the most quotable moments?'] },
+  { label: '📚 Lecture', goal: 'This is a lecture/tutorial; the user wants it skimmable while keeping every explanation intact.',
+    suggest: ['speed up everything except the key explanations', 'what are the main topics covered?'] },
+  { label: '🖥 Demo', goal: 'This is a product/software demo; the user wants a tight cut that shows only the working flow.',
+    suggest: ['cut the silences and keep the demo steps at 1x', 'make it under 2 minutes'] },
+  { label: '👥 Meeting', goal: 'This is a meeting recording; the user wants decisions and action items, fast.',
+    suggest: ['what was decided in this meeting?', 'keep only the parts where decisions are made'] },
+];
+let activeGoal: string | null = null;
+function renderGoalBar() {
+  const chips = $('goalChips');
+  chips.innerHTML = '';
+  for (const g of GOALS) {
+    const b = document.createElement('button');
+    b.className = 'goal-chip' + (activeGoal === g.goal ? ' active' : '');
+    b.textContent = g.label;
+    b.onclick = () => pickGoal(g.goal === activeGoal ? null : g.goal, g.goal === activeGoal ? [] : g.suggest);
+    chips.appendChild(b);
+  }
+  const custom = document.createElement('button');
+  custom.className = 'goal-chip' + (activeGoal && !GOALS.some((g) => g.goal === activeGoal) ? ' active' : '');
+  custom.textContent = '✎ Custom';
+  custom.onclick = () => {
+    const inp = $('goalCustom') as HTMLInputElement;
+    inp.hidden = false;
+    inp.focus();
+  };
+  chips.appendChild(custom);
+}
+function pickGoal(goal: string | null, suggest: string[]) {
+  activeGoal = goal;
+  void pve.setGoal(goal);
+  renderGoalBar();
+  const s = $('goalSuggest');
+  s.innerHTML = '';
+  for (const text of suggest) {
+    const b = document.createElement('button');
+    b.className = 'suggest-chip';
+    b.textContent = text;
+    b.onclick = () => {
+      ($('chatInput') as HTMLInputElement).value = text;
+      sendChat();
+    };
+    s.appendChild(b);
+  }
+}
+($('goalCustom') as HTMLInputElement).addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    const inp = e.target as HTMLInputElement;
+    if (inp.value.trim()) pickGoal(inp.value.trim(), []);
+    inp.hidden = true;
+  }
+  if (e.key === 'Escape') (e.target as HTMLInputElement).hidden = true;
+});
+
 let finalSummaryShown = false; // once the full-digest summary lands, ignore late partials
 
 // Progressive summary drafts stream in while whisper is still transcribing.
@@ -644,6 +740,11 @@ async function importPath(path: string) {
     return;
   }
   momentLabels = new Map();
+  // New file: goal resets, goal bar appears.
+  activeGoal = null;
+  pickGoal(null, []);
+  renderGoalBar();
+  $('goalBar').hidden = false;
   apply(res as Snapshot);
   const v = video();
   if ((res as Snapshot).mediaUrl) { v.setAttribute('src', (res as Snapshot).mediaUrl!); v.load(); }
