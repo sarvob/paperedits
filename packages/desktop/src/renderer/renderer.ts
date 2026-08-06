@@ -570,6 +570,9 @@ function renderHighlights() {
 function setDebug(on: boolean) {
   document.body.classList.toggle('debug', on);
   localStorage.setItem('pve-debug', on ? '1' : '');
+  // Metrics stream in as they happen; a mid-session toggle would otherwise
+  // show an empty strip until the next import, so pull the current values.
+  if (on) pve.metricsGet().then(renderMetrics).catch(() => {});
 }
 $('modeBadge').onclick = () => setDebug(!document.body.classList.contains('debug'));
 document.addEventListener('keydown', (e) => {
