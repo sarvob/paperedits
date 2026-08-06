@@ -189,9 +189,6 @@ button.primary:hover:not(:disabled) { background: #6f9bff; }
 .transport #scrub { flex: 1; accent-color: var(--accent); }
 .transport .tc { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; min-width: 84px; text-align: right; }
 
-.overlay-toolbar { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-.overlay-toolbar .ot-label { color: var(--muted); font-size: 12px; }
-.overlay-toolbar .ot-hint { color: var(--muted); font-size: 11px; opacity: 0.7; margin-left: auto; }
 .emoji-row { display: flex; gap: 2px; }
 .emoji-row button { padding: 4px 8px; font-size: 15px; }
 
@@ -247,27 +244,27 @@ button.primary:hover:not(:disabled) { background: #6f9bff; }
   position: absolute; top: 0; height: 54px; width: 96px;
   object-fit: cover; border-right: 1px solid #000;
 }
-.t-plan { position: relative; height: 24px; border-bottom: 1px solid var(--line); background: #0d0f14; }
+.t-plan { position: relative; height: 16px; border-bottom: 1px solid var(--line); background: #0d0f14; }
 .t-plan .plan-block {
-  position: absolute; top: 2px; bottom: 2px; border-radius: 4px;
-  font-size: 10px; line-height: 18px; padding: 0 5px;
+  position: absolute; top: 1px; bottom: 1px; border-radius: 3px;
+  font-size: 9px; line-height: 13px; padding: 0 4px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default;
 }
 .t-plan .plan-keep { background: rgba(53, 196, 107, 0.25); color: #7ee2a8; border: 1px solid rgba(53,196,107,0.5); }
 .t-plan .plan-fast { background: rgba(240, 161, 58, 0.18); color: #f0c98a; border: 1px solid rgba(240,161,58,0.4); }
-.t-clips { position: relative; height: 52px; border-bottom: 1px solid var(--line); }
+.t-clips { position: relative; height: 30px; border-bottom: 1px solid var(--line); }
 .t-clips .clip {
-  position: absolute; top: 3px; bottom: 3px;
-  border-radius: 6px; overflow: hidden; padding: 3px 6px;
+  position: absolute; top: 2px; bottom: 2px;
+  border-radius: 5px; overflow: hidden; padding: 0 6px;
   border-right: 1px solid rgba(0,0,0,0.4); cursor: pointer;
+  display: flex; align-items: center; gap: 5px; white-space: nowrap;
 }
 .t-clips .clip.key { background: linear-gradient(180deg, #2b6b43, #24583a); }
 .t-clips .clip.fast { background: linear-gradient(180deg, #8a5a20, #7a4d1c); }
 .t-clips .clip.card { background: #3a3550; }
-.t-clips .clip .c-spd { font-size: 10px; font-weight: 700; color: #fff; opacity: 0.9; }
-.t-clips .clip .c-lbl { font-size: 10px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.t-clips .clip .c-spd { font-size: 10px; font-weight: 700; color: #fff; opacity: 0.9; flex: none; }
+.t-clips .clip .c-lbl { font-size: 10px; color: #fff; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .t-clips .clip.hl { box-shadow: inset 0 0 0 2px #ffd54a; }
-.t-clips .clip.hl::after { content: '★'; position: absolute; top: 1px; right: 4px; font-size: 10px; color: #ffd54a; }
 .t-audio { display: block; height: 26px; border-bottom: 1px solid var(--line); }
 .t-ov { position: relative; height: 22px; }
 .playhead {
@@ -426,25 +423,34 @@ body.debug .debugbar { display: flex; }
 .debug-only { display: none; }
 body.debug .debug-only { display: block; }
 
-/* ---- goal bar ------------------------------------------------------------ */
-.goalbar {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin-top: 10px; padding: 8px 12px;
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+/* ---- Actions panel (goal + overlay controls) ------------------------------ */
+.acc-small .acc-body { font-size: 11.5px; display: flex; flex-direction: column; gap: 8px; }
+.action-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.action-row > label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); min-width: 46px; }
+.be-select.sm { font-size: 11.5px; padding: 3px 6px; flex: 1; }
+.sm-btn {
+  font-size: 11px; padding: 3px 10px; border-radius: 8px; cursor: pointer;
+  background: #232833; border: 1px solid var(--line); color: var(--text);
 }
-.goal-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); }
-.goal-chip {
-  font-size: 12px; padding: 4px 12px; border-radius: 999px; cursor: pointer;
-  background: #1a1e27; border: 1px solid var(--line); color: var(--text);
-}
-.goal-chip.active { background: #2b3a55; border-color: #4a6da7; }
+.action-hint { font-size: 10.5px; color: var(--muted); }
+.acc-small .emoji-row button { font-size: 13px; padding: 1px 4px; background: none; border: none; cursor: pointer; }
 .goal-suggest { display: flex; gap: 6px; flex-wrap: wrap; }
+.goal-suggest:empty { display: none; }
 .suggest-chip {
-  font-size: 11.5px; padding: 3px 10px; border-radius: 999px; cursor: pointer;
-  background: transparent; border: 1px dashed var(--line); color: var(--muted);
+  font-size: 11px; padding: 3px 10px; border-radius: 999px; cursor: pointer;
+  background: transparent; border: 1px dashed var(--line); color: var(--muted); text-align: left;
 }
 .suggest-chip:hover { color: var(--text); border-color: #4a6da7; }
 #goalCustom {
-  font-size: 12px; padding: 4px 10px; border-radius: 8px;
-  background: #1a1e27; border: 1px solid var(--line); color: var(--text); width: 220px;
+  font-size: 11.5px; padding: 4px 8px; border-radius: 8px;
+  background: #1a1e27; border: 1px solid var(--line); color: var(--text); width: 100%;
 }
+
+/* ---- key-moments track ---------------------------------------------------- */
+.t-moments { position: relative; height: 16px; border-bottom: 1px solid var(--line); background: #0d0f14; }
+.hl-star {
+  position: absolute; top: 0; transform: translateX(-50%);
+  font-size: 12px; line-height: 16px; color: #ffd54a; cursor: pointer;
+  text-shadow: 0 0 6px rgba(255, 213, 74, 0.45);
+}
+.hl-star:hover { color: #ffe694; }

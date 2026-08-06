@@ -390,6 +390,27 @@ function renderTracks(s: Snapshot) {
     clips.appendChild(div);
   }
 
+  // Key moments — ★ markers mapped onto the timeline right under the clips,
+  // with the ranked reason as the tooltip. Click seeks to the moment.
+  const mts = $('trackMoments');
+  mts.innerHTML = '';
+  mts.hidden = currentHighlights.length === 0;
+  if (currentHighlights.length) {
+    const byCand = new Map<string, { outStart: number }>();
+    for (const it of items) if (it.seg) byCand.set(it.seg.candidateId, it);
+    for (const h of currentHighlights) {
+      const it = byCand.get(h.id);
+      if (!it) continue;
+      const star = document.createElement('div');
+      star.className = 'hl-star';
+      star.style.left = `${it.outStart * pps}px`;
+      star.textContent = '★';
+      star.title = `${h.title} — ${h.why}`;
+      star.onclick = (ev) => { ev.stopPropagation(); stop(); seek(it.outStart + 0.05); };
+      mts.appendChild(star);
+    }
+  }
+
   // Audio track — per-pixel loudness sampled through the edit (output time →
   // source time via each segment's speed), so it stays aligned with the clips.
   const cv = $('trackAudio') as HTMLCanvasElement;
@@ -576,64 +597,71 @@ $('judgeBtn').onclick = async () => {
     : `faithfulness ${r.faithfulness}/10 · coverage ${r.coverage}/10 · clarity ${r.clarity}/10 (${r.judge}) — ${r.critique}`;
 };
 
-// ---- goal-first flow -------------------------------------------------------
-// Picking a goal tells the agent what job this video is for, and surfaces
-// one-click starting actions for that job.
-const GOALS: { label: string; goal: string; suggest: string[] }[] = [
-  { label: '🎙 Podcast', goal: 'This is a podcast episode; the user wants shareable highlights and a tight listen.',
-    suggest: ['make a 5 minute highlight cut', 'what are the most quotable moments?'] },
-  { label: '📚 Lecture', goal: 'This is a lecture/tutorial; the user wants it skimmable while keeping every explanation intact.',
-    suggest: ['speed up everything except the key explanations', 'what are the main topics covered?'] },
-  { label: '🖥 Demo', goal: 'This is a product/software demo; the user wants a tight cut that shows only the working flow.',
-    suggest: ['cut the silences and keep the demo steps at 1x', 'make it under 2 minutes'] },
-  { label: '👥 Meeting', goal: 'This is a meeting recording; the user wants decisions and action items, fast.',
-    suggest: ['what was decided in this meeting?', 'keep only the parts where decisions are made'] },
-];
-let activeGoal: string | null = null;
-function renderGoalBar() {
-  const chips = $('goalChips');
-  chips.innerHTML = '';
-  for (const g of GOALS) {
-    const b = document.createElement('button');
-    b.className = 'goal-chip' + (activeGoal === g.goal ? ' active' : '');
-    b.textContent = g.label;
-    b.onclick = () => pickGoal(g.goal === activeGoal ? null : g.goal, g.goal === activeGoal ? [] : g.suggest);
-    chips.appendChild(b);
-  }
-  const custom = document.createElement('button');
-  custom.className = 'goal-chip' + (activeGoal && !GOALS.some((g) => g.goal === activeGoal) ? ' active' : '');
-  custom.textContent = '✎ Custom';
-  custom.onclick = () => {
-    const inp = $('goalCustom') as HTMLInputElement;
-    inp.hidden = false;
-    inp.focus();
-  };
-  chips.appendChild(custom);
-}
-function pickGoal(goal: string | null, suggest: string[]) {
-  activeGoal = goal;
-  void pve.setGoal(goal);
-  renderGoalBar();
+// ---- goal (Actions panel) --------------------------------------------------
+// The goal tells the agent what job this video is for. Auto-detected from the
+// content after import; the dropdown always lets the user override it.
+const GOALS: Record<string, { goal: string; suggest: string[]; match: RegExp }> = {
+  podcast: { goal: 'This is a podcast episode; the user wants shareable highlights and a tight listen.',
+    suggest: ['make a 5 minute highlight cut', 'what are the most quotable moments?'],
+    match: /\bpodcast|episode|welcome back|my guest|listeners?\b/i },
+  lecture: { goal: 'This is a lecture/tutorial; the user wants it skimmable while keeping every explanation intact.',
+    suggest: ['speed up everything except the key explanations', 'what are the main topics covered?'],
+    match: /\blecture|lesson|tutorial|explain|theory|chapter|students?|learn\b/i },
+  demo: { goal: 'This is a product/software demo; the user wants a tight cut that shows only the working flow.',
+    suggest: ['cut the silences and keep the demo steps at 1x', 'make it under 2 minutes'],
+    match: /\bdemo|screen|click|app\b|button|install|deploy|terminal|code\b/i },
+  meeting: { goal: 'This is a meeting recording; the user wants decisions and action items, fast.',
+    suggest: ['what was decided in this meeting?', 'keep only the parts where decisions are made'],
+    match: /\bmeeting|agenda|action items?|sync|stand-?up|follow ?up|minutes\b/i },
+};
+let goalManuallySet = false;
+
+function applyGoal(key: string, auto: boolean) {
+  const g = GOALS[key];
+  void pve.setGoal(g ? g.goal : null);
+  const sel = $('goalSel') as HTMLSelectElement;
+  if (g && sel.value !== key) sel.value = key;
   const s = $('goalSuggest');
   s.innerHTML = '';
-  for (const text of suggest) {
+  for (const text of g?.suggest ?? []) {
     const b = document.createElement('button');
     b.className = 'suggest-chip';
     b.textContent = text;
-    b.onclick = () => {
-      ($('chatInput') as HTMLInputElement).value = text;
-      sendChat();
-    };
+    b.onclick = () => { ($('chatInput') as HTMLInputElement).value = text; sendChat(); };
     s.appendChild(b);
   }
+  if (auto && g) toast(`Goal auto-detected: ${key} (change it in Actions)`);
 }
-($('goalCustom') as HTMLInputElement).addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    const inp = e.target as HTMLInputElement;
-    if (inp.value.trim()) pickGoal(inp.value.trim(), []);
-    inp.hidden = true;
+
+/** Guess the video's job from its content; only applies until the user picks. */
+function autoDetectGoal(text: string) {
+  if (goalManuallySet || !text) return;
+  let best: string | null = null;
+  let bestN = 0;
+  for (const [key, g] of Object.entries(GOALS)) {
+    const n = (text.match(new RegExp(g.match.source, 'gi')) ?? []).length;
+    if (n > bestN) { bestN = n; best = key; }
   }
-  if (e.key === 'Escape') (e.target as HTMLInputElement).hidden = true;
+  if (best && bestN >= 2) applyGoal(best, true);
+}
+
+($('goalSel') as HTMLSelectElement).onchange = () => {
+  const v = ($('goalSel') as HTMLSelectElement).value;
+  goalManuallySet = v !== '';
+  const inp = $('goalCustom') as HTMLInputElement;
+  if (v === 'custom') { inp.hidden = false; inp.focus(); return; }
+  inp.hidden = true;
+  if (v === '') { void pve.setGoal(null); $('goalSuggest').innerHTML = ''; return; }
+  applyGoal(v, false);
+};
+($('goalCustom') as HTMLInputElement).addEventListener('keydown', (e) => {
+  const inp = e.target as HTMLInputElement;
+  if (e.key === 'Enter' && inp.value.trim()) {
+    goalManuallySet = true;
+    void pve.setGoal(inp.value.trim());
+    $('goalSuggest').innerHTML = '';
+  }
+  if (e.key === 'Escape') { inp.hidden = true; ($('goalSel') as HTMLSelectElement).value = ''; }
 });
 
 let finalSummaryShown = false; // once the full-digest summary lands, ignore late partials
@@ -668,6 +696,8 @@ async function requestSummary(force = false) {
   finalSummaryShown = true;
   momentLabels = new Map(res.moments.map((m) => [m.id, m.label]));
   if (current) renderEdl(current);
+  // The summary is the best signal for what kind of video this is.
+  autoDetectGoal(`${res.summary || ''} ${current?.digestText || ''}`);
 }
 function renderHistory(s: Snapshot) {
   // Defensive: a missing panel must never break the apply() chain.
@@ -740,12 +770,13 @@ async function importPath(path: string) {
     return;
   }
   momentLabels = new Map();
-  // New file: goal resets, goal bar appears.
-  activeGoal = null;
-  pickGoal(null, []);
-  renderGoalBar();
-  $('goalBar').hidden = false;
+  // New file: goal resets and re-detects from the new content.
+  goalManuallySet = false;
+  ($('goalSel') as HTMLSelectElement).value = '';
+  $('goalSuggest').innerHTML = '';
+  void pve.setGoal(null);
   apply(res as Snapshot);
+  autoDetectGoal((res as Snapshot).digestText || '');
   const v = video();
   if ((res as Snapshot).mediaUrl) { v.setAttribute('src', (res as Snapshot).mediaUrl!); v.load(); }
   startPaintLoop();

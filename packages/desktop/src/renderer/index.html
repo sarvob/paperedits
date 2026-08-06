@@ -72,20 +72,6 @@
               <input type="range" id="scrub" min="0" max="1000" value="0" />
               <span class="tc" id="tc">0:00 / 0:00</span>
             </div>
-            <div class="overlay-toolbar">
-              <span class="ot-label">Add overlay:</span>
-              <button id="addText">＋ Text</button>
-              <span class="emoji-row" id="emojiRow"></span>
-              <span class="ot-hint">drag an overlay in the preview to move it</span>
-            </div>
-          </div>
-
-          <!-- Goal-first: what job is this video for? Seeds the agent's context. -->
-          <div class="goalbar" id="goalBar" hidden>
-            <span class="goal-label">Goal:</span>
-            <span class="goal-chips" id="goalChips"></span>
-            <input id="goalCustom" type="text" placeholder="describe it…" hidden />
-            <span class="goal-suggest" id="goalSuggest"></span>
           </div>
 
           <div class="summary" id="summary" hidden>
@@ -112,6 +98,7 @@
                 <div class="t-ruler" id="ruler"></div>
                 <div class="t-film" id="trackFilm"></div>
                 <div class="t-clips" id="trackClips"></div>
+                <div class="t-moments" id="trackMoments"></div>
                 <canvas class="t-audio" id="trackAudio" height="26"></canvas>
                 <div class="t-plan" id="trackPlan" hidden></div>
                 <div class="t-ov" id="overlayTrack"></div>
@@ -133,6 +120,31 @@
 
       <aside class="sidebar">
         <div class="sidebar-panels">
+          <details class="acc acc-small" id="actionsPanel" open>
+            <summary>Actions</summary>
+            <div class="acc-body">
+              <div class="action-row">
+                <label for="goalSel">Goal</label>
+                <select id="goalSel" class="be-select sm">
+                  <option value="">auto-detect…</option>
+                  <option value="podcast">🎙 Podcast</option>
+                  <option value="lecture">📚 Lecture / tutorial</option>
+                  <option value="demo">🖥 Demo</option>
+                  <option value="meeting">👥 Meeting</option>
+                  <option value="custom">✎ Custom…</option>
+                </select>
+              </div>
+              <input id="goalCustom" type="text" placeholder="describe the goal, press Enter" hidden />
+              <div class="goal-suggest" id="goalSuggest"></div>
+              <div class="action-row">
+                <label>Overlay</label>
+                <button id="addText" class="sm-btn">＋ Text</button>
+                <span class="emoji-row" id="emojiRow"></span>
+              </div>
+              <div class="action-hint">drag an overlay in the preview to move it</div>
+            </div>
+          </details>
+
           <details class="acc">
             <summary>Intelligence</summary>
             <div class="acc-body">
