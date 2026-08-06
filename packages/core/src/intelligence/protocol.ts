@@ -111,6 +111,12 @@ export function parseHighlightsReply(raw: string): VideoHighlights {
 // Q&A — answering questions about the video (not edits)
 // ---------------------------------------------------------------------------
 
+export const PARTIAL_SUMMARY_SYSTEM = `You summarize the opening portion of a
+video from its transcript, possibly updating an earlier draft. Reply with ONLY
+the summary: 1-2 sentences, plain prose. If a draft is provided, revise it to
+absorb the new content — do not mention the draft, the transcript, or that this
+is partial.`;
+
 export const ANSWER_SYSTEM = `You are the assistant inside a video editor. You
 answer questions using the video digest (speech, activity, objects), the
 conversation so far, and LAST ACTION — the edit you (the assistant) just

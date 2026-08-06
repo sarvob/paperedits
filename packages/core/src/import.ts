@@ -1,4 +1,4 @@
-import type { Analysis } from './types.js';
+import type { Analysis, Word } from './types.js';
 
 /**
  * The import pass is the one part that touches native binaries (ffmpeg decode,
@@ -24,6 +24,11 @@ export interface ImportOptions {
    * the app start editing on the transcript immediately and gain vision later.
    */
   onEnriched?: (analysis: Analysis) => void;
+  /**
+   * Fired during transcription as contiguous transcript accumulates (chunked
+   * whisper only) — powers the progressive "summary within seconds" UX.
+   */
+  onPartialTranscript?: (words: Word[], coveredSec: number, totalSec: number) => void;
 }
 
 export type ImportStage = 'scan' | 'transcribe' | 'visual' | 'caption' | 'segment' | 'done';

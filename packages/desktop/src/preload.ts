@@ -23,6 +23,11 @@ contextBridge.exposeInMainWorld('pve', {
     ipcRenderer.on('import:enriched', listener);
     return () => ipcRenderer.removeListener('import:enriched', listener);
   },
+  onSummaryPartial: (cb: (p: { summary: string; coveredSec: number; totalSec: number }) => void) => {
+    const listener = (_e: unknown, p: { summary: string; coveredSec: number; totalSec: number }) => cb(p);
+    ipcRenderer.on('summary:partial', listener);
+    return () => ipcRenderer.removeListener('summary:partial', listener);
+  },
   prompt: (instruction: string) => ipcRenderer.invoke('session:prompt', instruction),
   undo: () => ipcRenderer.invoke('session:undo'),
   redo: () => ipcRenderer.invoke('session:redo'),

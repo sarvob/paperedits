@@ -38,6 +38,8 @@ export interface Backend {
   answer?(ctx: AnswerContext): Promise<string>;
   /** ranked key moments with reasons (which segments matter and why) */
   highlights?(digest: Digest): Promise<VideoHighlights>;
+  /** summarize a raw text snippet (used for progressive partial summaries) */
+  summarizeText?(text: string): Promise<string>;
 }
 
 /** Context for a Q&A turn (a question, not an edit request). */

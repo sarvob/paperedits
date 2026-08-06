@@ -159,10 +159,60 @@ ipcMain.handle('file:open', async () => {
   return res.canceled ? null : res.filePaths[0];
 });
 
+/**
+ * Progressive summary state: as whisper chunks land, summarize the delta with
+ * the fastest local model and push a draft to the UI ("refining…"). Coalesces —
+ * if a new partial arrives mid-summarize, intermediate ones are skipped.
+ */
+const partial = { draft: '', covered: 0, busy: false, queued: null as null | { text: string; covered: number; total: number }, gen: 0 };
+function fmtMin(s: number): string {
+  return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+}
+async function drainPartialSummary(sender: Electron.WebContents, gen: number): Promise<void> {
+  if (partial.busy) return;
+  partial.busy = true;
+  try {
+    while (partial.queued && gen === partial.gen) {
+      const p = partial.queued;
+      partial.queued = null;
+      const be = backgroundBackend();
+      if (!be.summarizeText) return;
+      const prompt =
+        (partial.draft ? `Draft summary of the video so far: ${partial.draft}\n\n` : '') +
+        `Transcript continues (${fmtMin(partial.covered)}–${fmtMin(p.covered)} of ${fmtMin(p.total)} total):\n${p.text}`;
+      try {
+        const draft = (await be.summarizeText(prompt)).trim();
+        if (draft && gen === partial.gen) {
+          partial.draft = draft;
+          partial.covered = p.covered;
+          if (!sender.isDestroyed()) sender.send('summary:partial', { summary: draft, coveredSec: p.covered, totalSec: p.total });
+        }
+      } catch {
+        /* partial summaries are best-effort */
+      }
+    }
+  } finally {
+    partial.busy = false;
+  }
+}
+
 ipcMain.handle('session:import', async (e, path: string) => {
   try {
+    partial.gen++;
+    partial.draft = '';
+    partial.covered = 0;
+    partial.queued = null;
+    const gen = partial.gen;
     const analysis = await importer.analyze(path, {
       onProgress: (stage, pct) => e.sender.send('import:progress', { stage, pct }),
+      onPartialTranscript: (words, coveredSec, totalSec) => {
+        // Only the words BEYOND the last summarized point — keeps prompts small
+        // (draft + delta), so partial summaries stay fast on any hardware.
+        const delta = words.filter((w) => w.start >= partial.covered - 1);
+        const text = delta.map((w) => w.text).join(' ').slice(0, 16000);
+        partial.queued = { text, covered: coveredSec, total: totalSec };
+        void drainPartialSummary(e.sender, gen);
+      },
       // The visual pass finishes AFTER import returns: fold captions into the
       // live session (EDL/chat/undo untouched) and tell the renderer.
       onEnriched: (enriched) => {

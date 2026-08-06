@@ -11,6 +11,7 @@ import {
   buildSummaryPrompt,
   HIGHLIGHTS_SYSTEM,
   parseHighlightsReply,
+  PARTIAL_SUMMARY_SYSTEM,
   parseModelReply,
   parseSummaryReply,
   SUMMARY_SYSTEM,
@@ -70,6 +71,11 @@ export class AnthropicBackend implements Backend {
     const prompt = buildHighlightsPrompt(digest);
     if (!(await this.gate(prompt))) return { highlights: [] };
     return parseHighlightsReply(await this.ask(HIGHLIGHTS_SYSTEM, prompt, 2000));
+  }
+
+  async summarizeText(text: string): Promise<string> {
+    if (!(await this.gate(text))) return '';
+    return sanitizeAnswer(await this.ask(PARTIAL_SUMMARY_SYSTEM, text, 300));
   }
 
   async answer(ctx: AnswerContext): Promise<string> {

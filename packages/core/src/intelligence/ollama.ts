@@ -9,6 +9,7 @@ import {
   buildSummaryPrompt,
   HIGHLIGHTS_SYSTEM,
   parseHighlightsReply,
+  PARTIAL_SUMMARY_SYSTEM,
   parseModelReply,
   parseSummaryReply,
   SUMMARY_SYSTEM,
@@ -72,5 +73,9 @@ export class OllamaBackend implements Backend {
 
   async highlights(digest: Digest): Promise<VideoHighlights> {
     return parseHighlightsReply(await this.chat(HIGHLIGHTS_SYSTEM, buildHighlightsPrompt(digest)));
+  }
+
+  async summarizeText(text: string): Promise<string> {
+    return sanitizeAnswer(await this.chat(PARTIAL_SUMMARY_SYSTEM, text, false));
   }
 }

@@ -11,6 +11,12 @@ export interface WhisperConfig {
   /** ggml model path; default PVE_WHISPER_MODEL */
   model?: string;
   onProgress?: (pct: number) => void;
+  /**
+   * Fired as contiguous transcript becomes available (chunked mode only):
+   * `words` is everything transcribed from 0..coveredSec so far. Enables
+   * progressive summaries long before the full transcript exists.
+   */
+  onPartial?: (words: Word[], coveredSec: number, totalSec: number) => void;
 }
 
 function resolveBin(cfg: WhisperConfig): string {
@@ -89,11 +95,27 @@ async function wavDuration(wav: string): Promise<number> {
   return Math.max(0, (size - 44) / 32000);
 }
 
-/** Chunking parameters: 8-minute chunks, 2s head-overlap, ≤3 concurrent procs. */
+/** Chunking parameters: small first chunk (fast first partial), then 8-minute
+ * strides; 2s head-overlap; ≤3 concurrent procs. */
+const FIRST_CHUNK = 120;
 const STRIDE = 480;
 const OVERLAP = 2;
 const CONCURRENCY = 3;
-const PARALLEL_THRESHOLD = 600; // below 10 min, one process is simpler & fine
+const PARALLEL_THRESHOLD = 240; // below 4 min, one process is simpler & fine
+
+/** Chunk boundaries: [0..FIRST_CHUNK], then STRIDE-sized, clamped to duration. */
+function chunkPlan(dur: number): { start: number; len: number; end: number; i: number }[] {
+  const bounds: number[] = [0, Math.min(FIRST_CHUNK, dur)];
+  while (bounds[bounds.length - 1]! < dur) {
+    bounds.push(Math.min(bounds[bounds.length - 1]! + STRIDE, dur));
+  }
+  const chunks: { start: number; len: number; end: number; i: number }[] = [];
+  for (let i = 0; i + 1 < bounds.length; i++) {
+    const start = Math.max(0, bounds[i]! - (i > 0 ? OVERLAP : 0));
+    chunks.push({ start, len: bounds[i + 1]! - start, end: bounds[i + 1]!, i });
+  }
+  return chunks;
+}
 
 /**
  * Transcribe to word-level `Word[]`. Long files are split into 8-minute chunks
@@ -117,18 +139,30 @@ export async function transcribe(input: string, cfg: WhisperConfig = {}): Promis
     }
 
     // Cut chunk wavs (stream-copy, near-instant), then run a small worker pool.
-    const chunks: { start: number; wav: string; out: string }[] = [];
-    for (let i = 0; i * STRIDE < dur; i++) {
-      const start = Math.max(0, i * STRIDE - (i > 0 ? OVERLAP : 0));
-      const len = STRIDE + (i > 0 ? OVERLAP : 0);
-      const cwav = join(dir, `c${i}.wav`);
-      await exec('ffmpeg', ['-y', '-ss', String(start), '-t', String(len), '-i', wav, '-c', 'copy', cwav]);
-      chunks.push({ start, wav: cwav, out: join(dir, `o${i}`) });
+    const plan = chunkPlan(dur);
+    const chunks: { start: number; end: number; wav: string; out: string }[] = [];
+    for (const c of plan) {
+      const cwav = join(dir, `c${c.i}.wav`);
+      await exec('ffmpeg', ['-y', '-ss', String(c.start), '-t', String(c.len), '-i', wav, '-c', 'copy', cwav]);
+      chunks.push({ start: c.start, end: c.end, wav: cwav, out: join(dir, `o${c.i}`) });
     }
 
     const results: Word[][] = new Array(chunks.length);
     let next = 0;
     let done = 0;
+    let emitted = 0;
+    // Emit contiguous-prefix partials in order, even when chunks finish out of
+    // order. The final chunk doesn't emit — the full return covers it.
+    const tryEmitPartial = () => {
+      let advanced = false;
+      while (emitted < chunks.length && results[emitted]) {
+        emitted++;
+        advanced = true;
+      }
+      if (advanced && emitted < chunks.length) {
+        cfg.onPartial?.(results.slice(0, emitted).flat(), chunks[emitted - 1]!.end, dur);
+      }
+    };
     const worker = async () => {
       for (;;) {
         const i = next++;
@@ -140,6 +174,7 @@ export async function transcribe(input: string, cfg: WhisperConfig = {}): Promis
           .map((w) => ({ text: w.text, start: w.start + c.start, end: w.end + c.start }));
         done++;
         cfg.onProgress?.(Math.round((done / chunks.length) * 100));
+        tryEmitPartial();
       }
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, chunks.length) }, worker));

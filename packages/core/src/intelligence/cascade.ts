@@ -81,4 +81,11 @@ export class CascadeBackend implements Backend {
     if (!b?.highlights) throw new Error('no backend can rank highlights');
     return b.highlights(digest);
   }
+
+  async summarizeText(text: string): Promise<string> {
+    // Partial summaries favor SPEED — use the cheapest tier that can do it.
+    const b = this.steps.find((s) => !!s.backend.summarizeText)?.backend;
+    if (!b?.summarizeText) throw new Error('no backend can summarize text');
+    return b.summarizeText(text);
+  }
 }

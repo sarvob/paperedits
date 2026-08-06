@@ -90,6 +90,7 @@ export class FfmpegImporter implements Importer {
           transcribe(path, {
             ...this.cfg.whisper,
             onProgress: (p) => opts.onProgress?.('transcribe', 20 + Math.round(p * 0.65)),
+            onPartial: (w, covered, total) => opts.onPartialTranscript?.(w, covered, total),
           }),
         ]);
         return { audio, words, levels };

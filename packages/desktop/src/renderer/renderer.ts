@@ -24,6 +24,7 @@ interface PveApi {
   import(path: string): Promise<{ ok: boolean; error?: string } & Partial<Snapshot>>;
   onImportProgress(cb: (p: { stage: string; pct: number }) => void): () => void;
   onImportEnriched(cb: (s: Snapshot) => void): () => void;
+  onSummaryPartial(cb: (p: { summary: string; coveredSec: number; totalSec: number }) => void): () => void;
   prompt(i: string): Promise<{ ok: boolean; rejected?: boolean; errors?: string[]; interpretation?: string } & Partial<Snapshot>>;
   undo(): Promise<Snapshot | null>;
   redo(): Promise<Snapshot | null>;
@@ -539,19 +540,36 @@ function renderHighlights() {
   });
 }
 
+let finalSummaryShown = false; // once the full-digest summary lands, ignore late partials
+
+// Progressive summary drafts stream in while whisper is still transcribing.
+pve.onSummaryPartial(({ summary, coveredSec, totalSec }) => {
+  if (finalSummaryShown) return;
+  $('summary').hidden = false;
+  $('summarySrc').textContent = `first ${fmt(coveredSec)} of ${fmt(totalSec)} · refining…`;
+  const el = $('summaryText');
+  el.className = 'summary-text';
+  el.textContent = summary;
+});
+
 async function requestSummary(force = false) {
   $('summary').hidden = false;
   const textEl = $('summaryText');
-  if (force || !$('summaryText').textContent?.trim() || $('summaryText').classList.contains('loading')) {
+  const hasPartialDraft = !finalSummaryShown && !!textEl.textContent?.trim() && !textEl.classList.contains('loading');
+  if (hasPartialDraft) {
+    // Keep the progressive draft on screen while the full summary computes.
+    $('summarySrc').textContent = 'finalizing…';
+  } else if (force || !textEl.textContent?.trim() || textEl.classList.contains('loading')) {
     textEl.className = 'summary-text loading';
     textEl.textContent = 'Summarizing…';
   }
-  const active = ($('backendSel') as HTMLSelectElement).value;
-  $('summarySrc').textContent = active === 'heuristic' ? 'from transcript' : `via ${active}`;
   const res = await pve.summarize(force);
   if (!res) { $('summary').hidden = true; return; }
   textEl.className = 'summary-text';
   textEl.textContent = res.summary || '(no summary)';
+  const active = ($('backendSel') as HTMLSelectElement).value;
+  $('summarySrc').textContent = active === 'heuristic' ? 'from transcript' : `via ${active}`;
+  finalSummaryShown = true;
   momentLabels = new Map(res.moments.map((m) => [m.id, m.label]));
   if (current) renderEdl(current);
 }
@@ -595,6 +613,11 @@ async function importPath(path: string) {
   // clear whether processing is happening.
   $('emptyState').hidden = true;
   $('importError').hidden = true;
+  // Partial summaries stream DURING the import await — arm them now, and clear
+  // any previous video's summary so drafts don't mix.
+  finalSummaryShown = false;
+  $('summaryText').textContent = '';
+  $('summary').hidden = true;
   $('workspace').hidden = true;
   $('importing').hidden = false;
   $('impStage').textContent = 'starting';
@@ -631,6 +654,7 @@ async function importPath(path: string) {
   currentHighlights = [];
   agentPlan = [];
   thumbs = null;
+  finalSummaryShown = false;
   renderHighlights();
   requestSummary();
   requestHighlights();

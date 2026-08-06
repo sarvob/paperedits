@@ -94,6 +94,12 @@ export class HeuristicBackend implements Backend {
     );
   }
 
+  /** No-model partial summary: the opening words, honestly labeled by caller. */
+  async summarizeText(text: string): Promise<string> {
+    const words = text.replace(/^[\s\S]*?transcript[^:]*:/i, '').trim().split(/\s+/);
+    return words.slice(0, 30).join(' ') + (words.length > 30 ? '…' : '');
+  }
+
   /** activity at/above this is "key" when the user asks for important parts */
   activityKeyThreshold = 0.55;
   /** default fast speed when the user says "rest" without a number */
