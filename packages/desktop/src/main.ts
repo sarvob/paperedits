@@ -145,6 +145,12 @@ function createWindow() {
       autoplayPolicy: 'no-user-gesture-required',
     },
   });
+  // Surface renderer console errors/warnings on stdout so failures in the UI
+  // are debuggable from the app log (renderer exceptions are otherwise silent).
+  win.webContents.on('console-message', (...args: unknown[]) => {
+    const [, level, message, line, sourceId] = args as [unknown, unknown, string, number, string];
+    console.log(`[renderer:${level}] ${message} (${sourceId?.split?.('/').pop()}:${line})`);
+  });
   win.loadFile(join(__dirname, 'index.html'));
 }
 
