@@ -4,9 +4,12 @@ import {
   Session,
   applyOps,
   buildDigest,
+  canonicalizeId,
+  canonicalizeOps,
   planRender,
   segment,
   validateOps,
+  wantsRemoval,
   type Op,
 } from '../src/index.js';
 import { makeAnalysis } from './fixture.js';
@@ -213,5 +216,85 @@ describe('render plan (base)', () => {
     expect(plan.estimatedOutputSec).toBeGreaterThan(0);
     // Output should be shorter than source, since fast sections compress time.
     expect(plan.estimatedOutputSec).toBeLessThan(session.analysis.durationSec);
+  });
+});
+
+describe('model id repair (formatting slips are not hallucinations)', () => {
+  it('resolves unpadded and bare-numeric ids, and rejects invented ones', () => {
+    const known = new Set(['c001', 'c020', 'c084']);
+    expect(canonicalizeId('c020', known)).toBe('c020'); // exact
+    expect(canonicalizeId('c20', known)).toBe('c020'); // dropped zero padding
+    expect(canonicalizeId('20', known)).toBe('c020'); // bare ordinal
+    expect(canonicalizeId('c999', known)).toBeNull(); // out of range → reject
+    expect(canonicalizeId('nonsense', known)).toBeNull();
+  });
+
+  it('repairs ids inside ops so a good edit is not rejected over a missing zero', () => {
+    const known = new Set(['c001', 'c020']);
+    const ops: Op[] = [
+      { op: 'retime', ids: ['c20', 'c1'], speed: 10 },
+      { op: 'classify', definition: 'x', keyIds: ['c20'] },
+    ];
+    const fixed = canonicalizeOps(ops, known);
+    expect((fixed[0] as { ids: string[] }).ids).toEqual(['c020', 'c001']);
+    expect((fixed[1] as { keyIds: string[] }).keyIds).toEqual(['c020']);
+  });
+});
+
+describe('duration targets are a promise, not an estimate', () => {
+  it('keeps the measured EDL under the target with margin for render drift', async () => {
+    const session = new Session(makeAnalysis());
+    const target = 20;
+    const r = await session.planTargetDuration(new HeuristicBackend(), target, 10, 'compress');
+    expect(r.resultSec).toBeLessThanOrEqual(target);
+  });
+
+  it('does not re-add segments an earlier edit already cut', async () => {
+    const session = new Session(makeAnalysis());
+    const firstId = session.candidates[0]!.id;
+    // Stand-in for "remove the technical demos": an edit that cuts a segment.
+    const cutter = {
+      name: 'test',
+      network: false,
+      plan: async () => ({ instruction: 'cut', ops: [{ op: 'cut', ids: [firstId] }] as Op[], interpretation: 'cut one' }),
+    };
+    await session.prompt('cut the first bit', cutter);
+    expect(session.edl.entries.some((e) => e.kind === 'segment' && e.candidateId === firstId)).toBe(false);
+
+    await session.planTargetDuration(new HeuristicBackend(), 25, 10, 'compress');
+    // The duration planner must not resurrect it as a sped-up segment.
+    expect(session.edl.entries.some((e) => e.kind === 'segment' && e.candidateId === firstId)).toBe(false);
+  });
+});
+
+describe('removal intent vs speed-up intent', () => {
+  it('only treats explicit removal language as a cut', () => {
+    expect(wantsRemoval('make it under 5 minutes')).toBe(false);
+    expect(wantsRemoval('cut it to 5 minutes')).toBe(false); // names the deliverable
+    expect(wantsRemoval('remove the rest, under 5 minutes')).toBe(true);
+    expect(wantsRemoval('only keep the highlights, under 5 min')).toBe(true);
+    expect(wantsRemoval('get rid of everything else, 4 minutes')).toBe(true);
+  });
+});
+
+describe('transitions', () => {
+  it('softens real cut boundaries without changing duration', async () => {
+    const session = new Session(makeAnalysis());
+    await session.prompt('key parts 1x, rest 10x', new HeuristicBackend());
+    const opts = { input: 'in.mp4', output: 'out.mp4', quality: 'match' as const, encoder: 'videotoolbox' as const };
+    const withFades = planRender(session.edl, opts);
+    const without = planRender(session.edl, { ...opts, transitionSec: 0 });
+    expect(withFades.filterComplex).toContain('fade=t=in');
+    expect(without.filterComplex).not.toContain('fade=t=');
+    // Fades must NOT shift timing — that is why this is not an xfade.
+    expect(withFades.estimatedOutputSec).toBeCloseTo(without.estimatedOutputSec, 5);
+  });
+
+  it('uses each encoder’s own constant-quality flag (crf is x264-only)', () => {
+    const base = { input: 'i.mp4', output: 'o.mp4', quality: 'draft' as const };
+    expect(planRender(new Session(makeAnalysis()).edl, { ...base, encoder: 'x264' }).args).toContain('-crf');
+    const vt = planRender(new Session(makeAnalysis()).edl, { ...base, encoder: 'videotoolbox' }).args;
+    expect(vt).toContain('-q:v');
+    expect(vt).not.toContain('-crf'); // silently ignored by videotoolbox
   });
 });

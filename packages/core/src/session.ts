@@ -2,6 +2,7 @@ import { applyOps } from './apply.js';
 import { buildDigest } from './digest.js';
 import { initialEdl, outputDuration } from './edl.js';
 import { History } from './history.js';
+import { canonicalizeId, canonicalizeOps } from './ids.js';
 import { HeuristicBackend } from './intelligence/heuristic.js';
 import type { Backend, HistoryEntry } from './intelligence/index.js';
 import { normalize, type PostProcessConfig } from './postprocess.js';
@@ -60,6 +61,20 @@ const QUESTION_WORD =
  * answer — so strip polite/aux prefixes, then let action verbs beat question
  * words, and question words / trailing "?" mark the rest as questions.
  */
+/**
+ * Does a duration request mean REMOVE the rest, or just speed it up?
+ *
+ * Only explicit removal language counts. Bare "cut it to 5 minutes" is left as
+ * compress: in editing, "a 5-minute cut" just names the deliverable, and
+ * silently deleting footage on an ambiguous verb is the kind of surprise this
+ * agent is supposed to avoid.
+ */
+export function wantsRemoval(message: string): boolean {
+  return /\b(cut out|cut away|remove|delete|drop|get rid of|lose)\b|\b(only|just)\s+(keep|the)\b|\bhighlights?\s+only\b|\bnothing but\b/i.test(
+    message,
+  );
+}
+
 export function isQuestion(message: string): boolean {
   const t = message
     .trim()
@@ -111,13 +126,18 @@ export class Session {
   async proposePatch(instruction: string, backend: Backend) {
     // The goal rides along as context, not as part of the command itself.
     const withGoal = this.goal ? `${instruction}\n(The user's overall goal for this video: ${this.goal})` : instruction;
-    return backend.plan({
+    const patch = await backend.plan({
       digest: this.digest,
       edl: this.history.edl,
       history: this.log.slice(-5),
       instruction: withGoal,
       tools: this.tools,
     });
+    // Repair id formatting before validation so a well-judged edit isn't
+    // rejected over a missing zero. Truly unknown ids survive unchanged and
+    // are still rejected downstream.
+    const known = new Set(this.digest.entries.map((e) => e.id));
+    return { ...patch, ops: canonicalizeOps(patch.ops, known) };
   }
 
   /**
@@ -214,7 +234,11 @@ export class Session {
             `Reply 1, 2, or 3 (or e.g. "use ${needed}x"). I won't change anything until you choose.`,
         };
       }
-      return this.runTargetPlan(backend, target.targetSec, target.fastSpeed, 'compress');
+      // "make it under 5 min" speeds the rest up; "cut it to 5 min" / "only keep
+      // the highlights" should REMOVE it. Without this, cut mode was reachable
+      // only when a target was infeasible, so a clean highlight reel at a
+      // feasible length was impossible to ask for.
+      return this.runTargetPlan(backend, target.targetSec, target.fastSpeed, wantsRemoval(message) ? 'cut' : 'compress');
     }
 
     // --- free-form edits via the op DSL ------------------------------------
@@ -262,20 +286,15 @@ export class Session {
       `Kept ${r.kept} key segment${r.kept === 1 ? '' : 's'} at 1× and ` +
       (mode === 'cut' ? `cut the other ${rest}` : `compressed the other ${rest} to ${fastSpeed}×`) +
       ` → new length ${fmtD(r.resultSec)} (target ${fmtD(targetSec)}). ` +
-      `The plan track under the audio shows each decision and why. Say "undo" to revert.`;
+      `The plan track under the audio shows each decision and why. Say "undo" to revert` +
+      (mode === 'compress' ? `, or "remove the rest instead" for a hard cut.` : `.`);
     this.lastAction = interpretation;
     return { kind: 'edit', ok: true, interpretation, edl: this.edl, usedFallback: false, plan: r.plan };
   }
 
   /** Run one instruction through the loop. Returns the new EDL or the errors. */
   async prompt(instruction: string, backend: Backend): Promise<PromptOutcome> {
-    const patch = await backend.plan({
-      digest: this.digest,
-      edl: this.history.edl,
-      history: this.log.slice(-5),
-      instruction,
-      tools: this.tools,
-    });
+    const patch = await this.proposePatch(instruction, backend);
 
     const errors = validateOps(patch.ops, this.digest, this.history.edl);
     if (errors.length) {
@@ -421,39 +440,72 @@ export class Session {
       .sort((a, b) => b.s - a.s);
     const rank = new Map(scored.map((x, i) => [x.c.id, i + 1]));
 
+    // Only segments still present in the EDL cost output time. An earlier edit
+    // ("remove the technical demos") may already have cut some; counting those
+    // as if they were still there makes the budget look full and over-compresses
+    // what remains — measured: a 5:00 target landing at 3:33.
+    const live = new Set(
+      this.history.edl.entries.filter((e): e is Extract<typeof e, { kind: 'segment' }> => e.kind === 'segment').map((e) => e.candidateId),
+    );
+    const planned = this.candidates.filter((c) => live.has(c.id));
+
     // Greedy: keep the most important segments at 1× while the total fits.
     const keep = new Set<string>();
     const totalWith = (k: Set<string>) =>
-      this.candidates.reduce((a, c) => a + (k.has(c.id) ? c.end - c.start : (c.end - c.start) / fastSpeed), 0);
+      planned.reduce((a, c) => a + (k.has(c.id) ? c.end - c.start : (c.end - c.start) / fastSpeed), 0);
     // In 'cut' mode removed segments cost 0 output time; in 'compress' mode
     // they still cost len/fastSpeed — the fit accounts for the difference.
     const costWith = (k: Set<string>) =>
       mode === 'cut'
-        ? this.candidates.reduce((a, c) => a + (k.has(c.id) ? c.end - c.start : 0), 0)
+        ? planned.reduce((a, c) => a + (k.has(c.id) ? c.end - c.start : 0), 0)
         : totalWith(k);
     for (const { c } of scored) {
+      if (!live.has(c.id)) continue; // already cut — leave it cut
       keep.add(c.id);
       if (costWith(keep) > targetSec) keep.delete(c.id);
     }
 
-    const keepIds = [...keep];
-    const fastIds = this.candidates.filter((c) => !keep.has(c.id)).map((c) => c.id);
-    const ops: MutatingOp[] = [{ op: 'classify', definition: `target ≤ ${Math.round(targetSec)}s`, keyIds: keepIds }];
-    if (keepIds.length) ops.push({ op: 'retime', ids: keepIds, speed: 1 });
-    if (fastIds.length) ops.push(mode === 'cut' ? { op: 'cut', ids: fastIds } : { op: 'retime', ids: fastIds, speed: fastSpeed });
+    const build = (k: Set<string>) => {
+      const keepIds = [...k];
+      const fastIds = planned.filter((c) => !k.has(c.id)).map((c) => c.id);
+      const ops: MutatingOp[] = [{ op: 'classify', definition: `target ≤ ${Math.round(targetSec)}s`, keyIds: keepIds }];
+      if (keepIds.length) ops.push({ op: 'retime', ids: keepIds, speed: 1 });
+      if (fastIds.length) ops.push(mode === 'cut' ? { op: 'cut', ids: fastIds } : { op: 'retime', ids: fastIds, speed: fastSpeed });
+      return normalize(applyOps(this.history.edl, ops, {}), this.atoms, this.cfg.postprocess);
+    };
 
-    const applied = applyOps(this.history.edl, ops, {});
-    const normalized = normalize(applied, this.atoms, this.cfg.postprocess);
+    // Closed loop: the greedy fit above is an ESTIMATE from candidate lengths,
+    // but normalize() snaps to atoms and can flip short islands, which pushed a
+    // 5:00 target to 5:02 in testing. "Under 5 minutes" has to mean under, so
+    // measure the real EDL and demote the weakest keeps until it actually fits.
+    //
+    // The budget is also held slightly under the target because the RENDER is
+    // longer than the EDL: every segment's duration snaps to a frame boundary,
+    // which measured +0.33s across 18 segments (299.9s EDL → 300.2s file). The
+    // promise has to hold for the exported file, not just the plan.
+    const budget = targetSec - Math.max(1, targetSec * 0.005);
+    let normalized = build(keep);
+    const weakestFirst = scored.filter((x) => keep.has(x.c.id)).map((x) => x.c.id).reverse();
+    for (const victim of weakestFirst) {
+      if (outputDuration(normalized) <= budget) break;
+      keep.delete(victim);
+      normalized = build(keep);
+    }
+
+    const keepIds = [...keep];
     this.history.commit(normalized, mode === 'cut' ? `cut to fit ${Math.round(targetSec)}s` : `fit under ${Math.round(targetSec)}s`);
 
-    this.agentPlan = this.candidates
+    this.agentPlan = planned
       .filter((c) => mode !== 'cut' || keep.has(c.id))
       .map((c) => ({
         id: c.id,
         speed: keep.has(c.id) ? 1 : fastSpeed,
+        // Greedy packing means a higher-ranked but long segment can lose its
+        // slot to a shorter one; say "didn't fit" rather than implying it was
+        // judged less important than everything kept.
         reason: keep.has(c.id)
           ? hlWhy.get(c.id) ?? `Ranked #${rank.get(c.id)} by importance — kept at 1×`
-          : `Rank #${rank.get(c.id)} — below the cut for the time budget, compressed ${fastSpeed}×`,
+          : `Rank #${rank.get(c.id)} — didn't fit the ${Math.round(targetSec)}s budget, compressed ${fastSpeed}×`,
       }));
     return { plan: this.agentPlan, resultSec: outputDuration(this.history.edl), kept: keepIds.length };
   }
@@ -470,9 +522,16 @@ export class Session {
     if (backend.highlights) {
       try {
         result = await backend.highlights(this.digest);
-        // Drop any hallucinated ids the validator would reject.
+        // Repair formatting slips ("c20" → "c020") first, THEN drop anything
+        // still unknown — otherwise correct rankings are thrown away as if
+        // they were hallucinations.
         const known = new Set(this.digest.entries.map((e) => e.id));
-        result.highlights = result.highlights.filter((h) => known.has(h.id));
+        result.highlights = result.highlights
+          .map((h) => ({ ...h, id: canonicalizeId(h.id, known) ?? h.id }))
+          .filter((h) => known.has(h.id));
+        // Two models can map onto the same segment once repaired.
+        const seen = new Set<string>();
+        result.highlights = result.highlights.filter((h) => !seen.has(h.id) && seen.add(h.id));
       } catch {
         result = null;
       }

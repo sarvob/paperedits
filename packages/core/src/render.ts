@@ -30,11 +30,22 @@ export interface RenderOptions {
   overlays?: OverlayRenderSpec[];
   /** does the source have audio? false → render video-only (no atempo/loudnorm) */
   hasAudio?: boolean;
+  /**
+   * Soften jump cuts with a short dip at real cut boundaries (seconds, 0 = off).
+   *
+   * Deliberately a per-segment fade rather than an `xfade` cross-dissolve: xfade
+   * overlaps neighbours, so it would shorten the output by d×(segments-1) — on a
+   * 59-segment cut that is ~17s of silent drift, and the rendered file would no
+   * longer match the duration the EDL (and the "under 5 minutes" plan) promises.
+   * A fade preserves timing exactly.
+   */
+  transitionSec?: number;
 }
 
 export const DEFAULT_RENDER: Omit<RenderOptions, 'input' | 'output'> = {
   quality: 'match',
   encoder: 'videotoolbox',
+  transitionSec: 0.12,
 };
 
 interface PlannedSegment {
@@ -107,11 +118,34 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
   const aLabels: string[] = [];
   const filters: string[] = [];
 
+  // A boundary needs softening only where the cut is real: the previous segment
+  // doesn't run straight into this one in the source, or the speed changes.
+  // Default here, not only in DEFAULT_RENDER: callers build RenderOptions
+  // literally (the desktop export does), so a default that lives only in that
+  // constant never actually applies. Pass 0 to disable.
+  const fadeD = Math.max(0, opts.transitionSec ?? 0.12);
+  const isCut = (i: number): boolean => {
+    if (i <= 0) return false;
+    const prev = segs[i - 1]!;
+    const cur = segs[i]!;
+    return Math.abs(prev.sourceEnd - cur.sourceStart) > 0.05 || prev.speed !== cur.speed;
+  };
+
   segs.forEach((s, i) => {
     const dur = (s.sourceEnd - s.sourceStart).toFixed(3);
+    const outDur = (s.sourceEnd - s.sourceStart) / s.speed;
+    // Only fade when the segment is comfortably longer than the fades it needs,
+    // otherwise a 10× sliver would be nothing but ramp.
+    const fadeIn = fadeD > 0 && isCut(i) && outDur > fadeD * 3;
+    const fadeOut = fadeD > 0 && i < segs.length - 1 && isCut(i + 1) && outDur > fadeD * 3;
+    const d = fadeD.toFixed(3);
+    const outSt = Math.max(0, outDur - fadeD).toFixed(3);
+    const vFade = `${fadeIn ? `,fade=t=in:st=0:d=${d}` : ''}${fadeOut ? `,fade=t=out:st=${outSt}:d=${d}` : ''}`;
+    const aFade = `${fadeIn ? `,afade=t=in:st=0:d=${d}` : ''}${fadeOut ? `,afade=t=out:st=${outSt}:d=${d}` : ''}`;
+
     // Video: trim to source range, reset PTS, scale time by 1/speed.
     filters.push(
-      `[0:v]trim=start=${s.sourceStart.toFixed(3)}:duration=${dur},setpts=(PTS-STARTPTS)/${s.speed}[v${i}]`,
+      `[0:v]trim=start=${s.sourceStart.toFixed(3)}:duration=${dur},setpts=(PTS-STARTPTS)/${s.speed}${vFade}[v${i}]`,
     );
     vLabels.push(`[v${i}]`);
 
@@ -122,7 +156,7 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
       // but still compressed to the right length.
       const muted = s.speed > 3 || s.audio === 'mute';
       filters.push(
-        `[0:a]atrim=start=${s.sourceStart.toFixed(3)}:duration=${dur},asetpts=PTS-STARTPTS,${atempoChain(s.speed)}${muted ? ',volume=0' : ''}[a${i}]`,
+        `[0:a]atrim=start=${s.sourceStart.toFixed(3)}:duration=${dur},asetpts=PTS-STARTPTS,${atempoChain(s.speed)}${muted ? ',volume=0' : aFade}[a${i}]`,
       );
       aLabels.push(`[a${i}]`);
     }
@@ -158,12 +192,19 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
   const audioChain = hasAudio ? [`[araw]loudnorm[outa]`] : [];
   const filterComplex = [...filters, concat, ...overlayFilters, ...audioChain].join(';');
 
+  // -crf is a libx264 flag; the hardware encoders SILENTLY IGNORE it and fall
+  // back to their own (very high) default bitrate — a 5-min 480p draft came out
+  // at 108MB. Each encoder needs its own constant-quality flag.
+  const cq: Record<RenderOptions['encoder'], (high: boolean) => string[]> = {
+    x264: (h) => ['-crf', h ? '18' : '28'],
+    videotoolbox: (h) => ['-q:v', h ? '60' : '35'],
+    nvenc: (h) => ['-cq', h ? '20' : '30'],
+    qsv: (h) => ['-global_quality', h ? '20' : '30'],
+  };
   const qualityFlags =
     opts.quality === 'match'
       ? ['-b:v', 'copymatch'] // resolved to source bitrate by the caller at spawn time
-      : opts.quality === 'high'
-        ? ['-crf', '18']
-        : ['-crf', '28'];
+      : cq[opts.encoder](opts.quality === 'high');
 
   const overlayInputs = overlays.flatMap((ov) => ['-i', ov.png]);
   const args = [
