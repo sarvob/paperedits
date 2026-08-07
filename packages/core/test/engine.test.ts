@@ -12,6 +12,7 @@ import {
   wantsRemoval,
   type Op,
 } from '../src/index.js';
+import { buildSentences, insideSentence, snapOutOfWord, topicBoundaries } from '../src/semantic.js';
 import { makeAnalysis } from './fixture.js';
 
 describe('segmentation', () => {
@@ -318,5 +319,57 @@ describe('transitions', () => {
     const vt = planRender(new Session(makeAnalysis()).edl, { ...base, encoder: 'videotoolbox' }).args;
     expect(vt).toContain('-q:v');
     expect(vt).not.toContain('-crf'); // silently ignored by videotoolbox
+  });
+});
+
+describe('cuts land where meaning is complete', () => {
+  it('never places a boundary inside a word or a sentence', () => {
+    const analysis = makeAnalysis();
+    const { atoms, candidates } = segment(analysis);
+    const sentences = buildSentences(analysis.words);
+    const bounds = [...new Set(candidates.flatMap((c) => [c.start, c.end]))].filter(
+      (t) => t > 0.1 && t < analysis.durationSec - 0.1,
+    );
+    for (const t of bounds) {
+      expect(analysis.words.some((w) => t > w.start + 0.02 && t < w.end - 0.02)).toBe(false);
+      expect(insideSentence(t, sentences)).toBe(false);
+    }
+    expect(atoms.length).toBeGreaterThan(0);
+  });
+
+  it('drops scene cuts that would interrupt a spoken sentence', () => {
+    const analysis = makeAnalysis();
+    const sentences = buildSentences(analysis.words);
+    // A scene cut planted in the middle of a sentence must not become a boundary.
+    const victim = sentences.find((s) => s.end - s.start > 1);
+    if (!victim) return;
+    const mid = (victim.start + victim.end) / 2;
+    const withCut = { ...analysis, sceneCuts: [...analysis.sceneCuts, mid] };
+    const atoms = segment(withCut).atoms;
+    expect(atoms.some((a) => Math.abs(a.end - mid) < 0.02)).toBe(false);
+  });
+
+  it('snapOutOfWord moves a boundary to the nearest silence between words', () => {
+    const words = [
+      { start: 0, end: 1, text: 'hello' },
+      { start: 1.4, end: 2, text: 'world' },
+    ];
+    expect(snapOutOfWord(1.2, words)).toBe(1.2); // already in the gap
+    expect(snapOutOfWord(0.9, words)).toBe(1); // inside 'hello' → its end
+    expect(snapOutOfWord(0.1, words)).toBe(0); // inside 'hello' → its start
+  });
+
+  it('finds a topic shift where the vocabulary changes', () => {
+    const mk = (text: string, i: number) => ({ start: i, end: i + 0.9, text });
+    // Ten sentences about pricing, then ten about hardware.
+    const words = [
+      ...Array.from({ length: 10 }, (_, i) => mk('pricing revenue customers margin contracts.', i)),
+      ...Array.from({ length: 10 }, (_, i) => mk('rotor battery airframe thrust chassis.', i + 10)),
+    ];
+    const sentences = buildSentences(words);
+    const shifts = topicBoundaries(sentences, 3);
+    expect(shifts.length).toBeGreaterThan(0);
+    // The shift should be near sentence 10, where the subject changes.
+    expect(Math.min(...shifts.map((i) => Math.abs(i - 10)))).toBeLessThanOrEqual(2);
   });
 });

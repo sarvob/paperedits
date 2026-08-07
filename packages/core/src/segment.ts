@@ -1,3 +1,4 @@
+import { buildSentences, insideSentence, snapOutOfWord, topicBoundaries } from './semantic.js';
 import type { Analysis, Atom, Candidate, Word } from './types.js';
 
 /** Tunables for segmentation. Exposed so heuristic mode / UI can adjust them. */
@@ -37,6 +38,15 @@ export function buildAtoms(analysis: Analysis, cfg: SegmentConfig = DEFAULT_SEGM
   // Collect candidate boundary times with a reason, then sort/dedupe.
   const marks: { at: number; reason: Atom['reason'] }[] = [{ at: 0, reason: 'start' }];
 
+  // Sentence and topic structure come from the words, not from the audio
+  // envelope: a cut should land where a thought has closed.
+  const sentences = buildSentences(words, cfg.silenceGapSec);
+  const topicIdx = new Set(topicBoundaries(sentences));
+  sentences.forEach((s, i) => {
+    if (i === 0) return;
+    marks.push({ at: s.start, reason: topicIdx.has(i) ? 'topic' : 'sentence' });
+  });
+
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!;
     const next = words[i + 1];
@@ -46,7 +56,16 @@ export function buildAtoms(analysis: Analysis, cfg: SegmentConfig = DEFAULT_SEGM
       marks.push({ at: w.end, reason: 'sentence' });
     }
   }
-  for (const cut of sceneCuts) marks.push({ at: cut, reason: 'scene' });
+
+  // Scene cuts are a VIDEO signal and know nothing about speech — a camera
+  // angle changes mid-clause constantly. Keep one only if it doesn't interrupt
+  // a sentence; otherwise it is exactly the boundary that produced cuts and
+  // speed changes in the middle of a spoken thought.
+  for (const cut of sceneCuts) {
+    if (words.length && insideSentence(cut, sentences)) continue;
+    const safe = snapOutOfWord(cut, words);
+    if (safe !== null) marks.push({ at: safe, reason: 'scene' });
+  }
   marks.push({ at: durationSec, reason: 'end' });
 
   marks.sort((a, b) => a.at - b.at);
@@ -80,13 +99,15 @@ export function buildAtoms(analysis: Analysis, cfg: SegmentConfig = DEFAULT_SEGM
   }
 
   // Merge atoms shorter than minAtomSec into the following atom so no cut point
-  // is uselessly small — but NEVER dissolve a scene-cut boundary (prev.reason
-  // 'scene' means prev.end is a hard visual cut). Merging across it would hide
-  // the scene change from candidate segmentation.
+  // is uselessly small — but NEVER dissolve a scene-cut or topic boundary.
+  // 'scene' means prev.end is a hard visual cut; 'topic' means the speaker
+  // finished an idea there, which is the best cut point we have and the whole
+  // reason a 20-second thought doesn't get sliced down the middle.
   const merged: Atom[] = [];
   for (const atom of raw) {
     const prev = merged[merged.length - 1];
-    if (prev && prev.reason !== 'scene' && prev.end - prev.start < cfg.minAtomSec) {
+    const protectedBoundary = prev?.reason === 'scene' || prev?.reason === 'topic';
+    if (prev && !protectedBoundary && prev.end - prev.start < cfg.minAtomSec) {
       merged[merged.length - 1] = {
         id: boundaryId('atom', prev.start, atom.end),
         start: prev.start,
@@ -126,9 +147,6 @@ export function buildCandidates(
   atoms: Atom[],
   cfg: SegmentConfig = DEFAULT_SEGMENT_CONFIG,
 ): Candidate[] {
-  const sceneCutSet = analysis.sceneCuts;
-  const isSceneJoin = (t: number) => sceneCutSet.some((c) => Math.abs(c - t) < 0.05);
-
   const groups: Atom[][] = [];
   let current: Atom[] = [];
 
@@ -141,11 +159,17 @@ export function buildCandidates(
     // The boundary at `atom.start` is the END reason of the previous atom.
     const boundaryReason = current[current.length - 1]!.reason;
     const wouldBeLong = atom.end - spanStart > cfg.maxCandidateSec;
-    const sceneBreak = isSceneJoin(atom.start) || boundaryReason === 'scene';
+    // Only atoms whose END is a scene cut count — consulting the raw scene-cut
+    // list here would re-introduce the mid-sentence breaks that buildAtoms
+    // deliberately filtered out.
+    const sceneBreak = boundaryReason === 'scene';
     // Silence, and interval marks (unstructured-video fallback), end a candidate.
     const silenceBreak = boundaryReason === 'silence' || boundaryReason === 'interval';
+    // A topic shift is the boundary we most want candidates to align to: it is
+    // where the agent can speed up or drop a span without severing a thought.
+    const topicBreak = boundaryReason === 'topic';
 
-    if (wouldBeLong || sceneBreak || silenceBreak) {
+    if (wouldBeLong || sceneBreak || silenceBreak || topicBreak) {
       groups.push(current);
       current = [atom];
     } else {

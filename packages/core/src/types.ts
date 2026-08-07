@@ -69,8 +69,9 @@ export interface Atom {
   id: string;
   start: number;
   end: number;
-  /** why this boundary exists — useful for debugging segmentation */
-  reason: 'silence' | 'sentence' | 'scene' | 'start' | 'end' | 'interval';
+  /** why this boundary exists — useful for debugging segmentation.
+   *  'topic' is the strongest: the speaker moved to a new idea here. */
+  reason: 'topic' | 'silence' | 'sentence' | 'scene' | 'start' | 'end' | 'interval';
 }
 
 /**
