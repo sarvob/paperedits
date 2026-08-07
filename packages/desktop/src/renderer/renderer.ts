@@ -902,6 +902,14 @@ function addMsg(cls: string, text: string): HTMLElement {
   $('chatLog').scrollTop = $('chatLog').scrollHeight;
   return el;
 }
+/** Quietly stamp how long a reply took, so slowness is always visible. */
+function stampTime(el: HTMLElement, ms: number) {
+  const s = document.createElement('span');
+  s.className = 'msg-time';
+  s.textContent = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+  el.appendChild(s);
+  $('chatLog').scrollTop = $('chatLog').scrollHeight;
+}
 async function sendChat() {
   const input = $('chatInput') as HTMLInputElement;
   const text = input.value.trim();
@@ -920,20 +928,25 @@ async function sendChat() {
     thinking.textContent = streamed;
     $('chatLog').scrollTop = $('chatLog').scrollHeight;
   });
+  const t0 = performance.now();
   let res;
   try {
     res = await pve.chat(text);
   } finally {
     off();
   }
+  const took = Math.round(performance.now() - t0);
   thinking.remove();
-  if (!res || !res.ok) { addMsg('bot err', (res as { error?: string })?.error || 'something went wrong'); return; }
+  if (!res || !res.ok) {
+    stampTime(addMsg('bot err', (res as { error?: string })?.error || 'something went wrong'), took);
+    return;
+  }
   if (res.kind === 'edit') {
-    addMsg('bot edit', `✓ ${res.text}${res.usedFallback ? '  (heuristic)' : ''}`);
+    stampTime(addMsg('bot edit', `✓ ${res.text}${res.usedFallback ? '  (heuristic)' : ''}`), took);
     apply(res as unknown as Snapshot, { keepPlayhead: true });
   } else {
     // Prefer the final (sanitized) text over the raw stream.
-    addMsg('bot', res.text || streamed || '(no answer)');
+    stampTime(addMsg('bot', res.text || streamed || '(no answer)'), took);
   }
 }
 

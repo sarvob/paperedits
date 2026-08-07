@@ -483,3 +483,13 @@ body.debug .debug-only { display: block; }
   border: 1px solid rgba(0,0,0,0.45); cursor: pointer; z-index: 3;
 }
 .ov .ov-x:hover { filter: brightness(1.2); }
+
+/* Reply timing — present but never competing with the answer itself. */
+.msg .msg-time {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.35;
+  letter-spacing: 0.2px;
+}
