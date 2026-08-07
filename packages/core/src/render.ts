@@ -40,6 +40,12 @@ export interface RenderOptions {
    * A fade preserves timing exactly.
    */
   transitionSec?: number;
+  /**
+   * Blend the frames a speed-up would otherwise throw away, so fast sections
+   * read as smooth motion instead of a stutter of every Nth frame. Costs some
+   * encode time; set false for the fastest possible render.
+   */
+  motionBlur?: boolean;
 }
 
 export const DEFAULT_RENDER: Omit<RenderOptions, 'input' | 'output'> = {
@@ -118,17 +124,27 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
   const aLabels: string[] = [];
   const filters: string[] = [];
 
-  // A boundary needs softening only where the cut is real: the previous segment
-  // doesn't run straight into this one in the source, or the speed changes.
   // Default here, not only in DEFAULT_RENDER: callers build RenderOptions
   // literally (the desktop export does), so a default that lives only in that
   // constant never actually applies. Pass 0 to disable.
   const fadeD = Math.max(0, opts.transitionSec ?? 0.12);
+
+  /**
+   * Where a fade is WANTED: only between two full-speed segments whose source
+   * isn't contiguous — a real content jump the viewer would otherwise find
+   * jarring.
+   *
+   * These fades dip through BLACK. Applying them at speed changes and at the
+   * many source gaps inside a compressed run made the fast-forward sections
+   * strobe black between frames. Fast-forward has to read as continuous
+   * motion, so every boundary touching a sped-up segment gets a hard cut.
+   */
   const isCut = (i: number): boolean => {
     if (i <= 0) return false;
     const prev = segs[i - 1]!;
     const cur = segs[i]!;
-    return Math.abs(prev.sourceEnd - cur.sourceStart) > 0.05 || prev.speed !== cur.speed;
+    if (prev.speed > 1 || cur.speed > 1) return false; // never strobe a fast run
+    return Math.abs(prev.sourceEnd - cur.sourceStart) > 0.05;
   };
 
   segs.forEach((s, i) => {
@@ -143,9 +159,17 @@ export function planRender(edl: Edl, opts: RenderOptions): RenderPlan {
     const vFade = `${fadeIn ? `,fade=t=in:st=0:d=${d}` : ''}${fadeOut ? `,fade=t=out:st=${outSt}:d=${d}` : ''}`;
     const aFade = `${fadeIn ? `,afade=t=in:st=0:d=${d}` : ''}${fadeOut ? `,afade=t=out:st=${outSt}:d=${d}` : ''}`;
 
-    // Video: trim to source range, reset PTS, scale time by 1/speed.
+    // Motion blur must come BEFORE setpts: it averages the source frames that
+    // the speed-up is about to discard, which is what makes a 10× pass look
+    // like fast-forward rather than a slideshow of every 10th frame.
+    const blur =
+      (opts.motionBlur ?? true) && s.speed >= 4
+        ? `,tmix=frames=${Math.max(2, Math.min(8, Math.round(s.speed / 2)))}`
+        : '';
+
+    // Video: trim to source range, blend, reset PTS, scale time by 1/speed.
     filters.push(
-      `[0:v]trim=start=${s.sourceStart.toFixed(3)}:duration=${dur},setpts=(PTS-STARTPTS)/${s.speed}${vFade}[v${i}]`,
+      `[0:v]trim=start=${s.sourceStart.toFixed(3)}:duration=${dur}${blur},setpts=(PTS-STARTPTS)/${s.speed}${vFade}[v${i}]`,
     );
     vLabels.push(`[v${i}]`);
 

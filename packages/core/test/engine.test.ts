@@ -278,16 +278,38 @@ describe('removal intent vs speed-up intent', () => {
 });
 
 describe('transitions', () => {
-  it('softens real cut boundaries without changing duration', async () => {
+  it('never fades a boundary touching a sped-up segment (no strobing)', async () => {
     const session = new Session(makeAnalysis());
     await session.prompt('key parts 1x, rest 10x', new HeuristicBackend());
+    const plan = planRender(session.edl, { input: 'in.mp4', output: 'out.mp4', quality: 'match', encoder: 'videotoolbox' });
+    // Fades dip through black; around a fast run that reads as flicker.
+    expect(plan.filterComplex).not.toContain('fade=t=');
+  });
+
+  it('fades a real content jump between two full-speed segments, without changing duration', () => {
+    const session = new Session(makeAnalysis());
+    const segs = session.edl.entries.filter((e) => e.kind === 'segment');
+    // Remove a middle segment so its neighbours are no longer contiguous.
+    const victim = segs[1]!;
+    const cut = applyOps(session.edl, [{ op: 'cut', ids: [(victim as { candidateId: string }).candidateId] }] as Op[], {});
     const opts = { input: 'in.mp4', output: 'out.mp4', quality: 'match' as const, encoder: 'videotoolbox' as const };
-    const withFades = planRender(session.edl, opts);
-    const without = planRender(session.edl, { ...opts, transitionSec: 0 });
-    expect(withFades.filterComplex).toContain('fade=t=in');
+    const withFades = planRender(cut, opts);
+    const without = planRender(cut, { ...opts, transitionSec: 0 });
+    expect(withFades.filterComplex).toContain('fade=t=');
     expect(without.filterComplex).not.toContain('fade=t=');
     // Fades must NOT shift timing — that is why this is not an xfade.
     expect(withFades.estimatedOutputSec).toBeCloseTo(without.estimatedOutputSec, 5);
+  });
+
+  it('motion-blurs sped-up segments before the speed change, not after', async () => {
+    const session = new Session(makeAnalysis());
+    await session.prompt('key parts 1x, rest 10x', new HeuristicBackend());
+    const opts = { input: 'in.mp4', output: 'out.mp4', quality: 'match' as const, encoder: 'videotoolbox' as const };
+    const fc = planRender(session.edl, opts).filterComplex;
+    expect(fc).toContain('tmix=frames=');
+    // Blending has to happen on the frames the speed-up discards.
+    expect(fc.indexOf('tmix=')).toBeLessThan(fc.indexOf('setpts=(PTS-STARTPTS)/10'));
+    expect(planRender(session.edl, { ...opts, motionBlur: false }).filterComplex).not.toContain('tmix=');
   });
 
   it('uses each encoder’s own constant-quality flag (crf is x264-only)', () => {
