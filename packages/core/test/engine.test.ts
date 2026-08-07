@@ -10,6 +10,7 @@ import {
   segment,
   validateOps,
   wantsRemoval,
+  isQuestion,
   buildTopics,
   assembleNarrative,
   type Op,
@@ -453,5 +454,31 @@ describe('prompt cache ordering', () => {
     expect(p.indexOf('</digest>')).toBeLessThan(p.indexOf('Question:'));
     // The question must still come last, per ANSWER_SYSTEM.
     expect(p.indexOf('Question:')).toBeGreaterThan(p.indexOf('<conversation>'));
+  });
+});
+
+describe('chat routing: asking for an explanation must never edit', () => {
+  it('routes information requests to Q&A and edit requests to the edit path', () => {
+    // Asking the agent to justify itself previously applied a classify op to
+    // the user's EDL — same verb ("give me"), opposite intent.
+    for (const q of [
+      'give me reasons for each selection',
+      'show me the key points',
+      'give me a breakdown',
+      'list the main topics',
+      'tell me atleast 5 interesting points',
+      'walk me through the rationale',
+    ]) {
+      expect(isQuestion(q), q).toBe(true);
+    }
+    for (const e of [
+      'give me a 5 minute cut',
+      'show me at 2x',
+      'cut the silences',
+      'make it under 3 minutes',
+      'speed up the boring parts',
+    ]) {
+      expect(isQuestion(e), e).toBe(false);
+    }
   });
 });

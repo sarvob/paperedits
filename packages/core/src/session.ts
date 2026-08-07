@@ -76,6 +76,12 @@ export function wantsRemoval(message: string): boolean {
   );
 }
 
+/** Verbs that introduce a request which may be for information OR an edit. */
+const ASK_VERB = /^(give|show|list|name|walk me|break (it|this) down)\b/;
+/** Things you can only ASK for — you cannot "edit" a reason into existence. */
+const INFO_OBJECT =
+  /\b(reasons?|rationale|justifications?|points?|facts?|examples?|details?|takeaways?|topics?|breakdown|overview|summary|thoughts?|opinion)\b/;
+
 export function isQuestion(message: string): boolean {
   const t = message
     .trim()
@@ -84,6 +90,11 @@ export function isQuestion(message: string): boolean {
     .replace(/^please /, '');
   if (ACTION_VERB.test(t)) return false;
   if (QUESTION_WORD.test(t)) return true;
+  // "give me the reasons" / "show me the key points" ask for information, but
+  // "give me a 5 minute cut" is an edit — same verb, opposite intent. Require
+  // an informational object AND no duration target. Without this, asking the
+  // agent to explain itself silently applied an edit to the user's timeline.
+  if (ASK_VERB.test(t) && INFO_OBJECT.test(t) && !parseTargetDuration(message)) return true;
   return t.endsWith('?');
 }
 
