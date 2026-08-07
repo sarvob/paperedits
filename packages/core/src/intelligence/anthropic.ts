@@ -13,8 +13,12 @@ import {
   parseHighlightsReply,
   PARTIAL_SUMMARY_SYSTEM,
   JUDGE_SYSTEM,
+  TOPICS_SYSTEM,
   buildJudgePrompt,
+  buildTopicsPrompt,
   parseAssessment,
+  parseTopicsReply,
+  type TopicInput,
   parseModelReply,
   parseSummaryReply,
   SUMMARY_SYSTEM,
@@ -85,6 +89,12 @@ export class AnthropicBackend implements Backend {
     const prompt = buildAnswerPrompt(ctx);
     if (!(await this.gate(prompt))) return 'send cancelled by user';
     return sanitizeAnswer(await this.ask(ANSWER_SYSTEM, prompt, 1500));
+  }
+
+  async planTopics(topics: TopicInput[], goal: string | undefined, totalSec: number) {
+    const prompt = buildTopicsPrompt(topics, goal, totalSec);
+    if (!(await this.gate(prompt))) throw new Error('send cancelled by user');
+    return parseTopicsReply(await this.ask(TOPICS_SYSTEM, prompt, 2000));
   }
 
   async assess(transcript: string, summary: string) {

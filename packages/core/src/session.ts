@@ -3,6 +3,7 @@ import { buildDigest } from './digest.js';
 import { initialEdl, outputDuration } from './edl.js';
 import { History } from './history.js';
 import { canonicalizeId, canonicalizeOps } from './ids.js';
+import { assembleNarrative, buildTopics, type Topic, type TopicVerdict } from './narrative.js';
 import { HeuristicBackend } from './intelligence/heuristic.js';
 import type { Backend, HistoryEntry } from './intelligence/index.js';
 import { normalize, type PostProcessConfig } from './postprocess.js';
@@ -419,6 +420,12 @@ export class Session {
     fastSpeed = 10,
     mode: 'compress' | 'cut' = 'compress',
   ): Promise<{ plan: AgentPlanItem[]; resultSec: number; kept: number }> {
+    // Prefer the narrative planner: it judges every TOPIC against the user's
+    // goal, so the cut is assembled from meaning rather than from which
+    // segments happened to be loud. Falls back to highlight-ranked greedy.
+    const narrative = await this.planNarrative(backend, targetSec, fastSpeed, mode).catch(() => null);
+    if (narrative) return narrative;
+
     const hl = await this.getHighlights(backend).catch(() => ({ highlights: [] }) as VideoHighlights);
     const hlScore = new Map(hl.highlights.map((h) => [h.id, h.score]));
     const hlWhy = new Map(hl.highlights.map((h) => [h.id, h.why || h.title]));
@@ -502,6 +509,97 @@ export class Session {
           : `Rank #${rank.get(c.id)} — didn't fit the ${Math.round(targetSec)}s budget, compressed ${fastSpeed}×`,
       }));
     return { plan: this.agentPlan, resultSec: outputDuration(this.history.edl), kept: keepIds.length };
+  }
+
+  private topicCache: { topics: Topic[]; verdicts: Map<string, TopicVerdict> } | null = null;
+
+  /** Topic map + the model's verdict on each, against the user's goal. */
+  async understand(backend: Backend, force = false): Promise<{ topics: Topic[]; verdicts: Map<string, TopicVerdict> } | null> {
+    if (this.topicCache && !force) return this.topicCache;
+    if (!backend.planTopics) return null;
+    const topics = buildTopics(this.analysis, this.candidates);
+    if (topics.length < 2) return null;
+    const raw = await backend.planTopics(
+      topics.map((t) => ({ id: t.id, start: t.start, end: t.end, text: t.text })),
+      this.goal ?? undefined,
+      this.analysis.durationSec,
+    );
+    // Same repair as everywhere else: a formatting slip is not a hallucination.
+    const known = new Set(topics.map((t) => t.id));
+    const verdicts = new Map<string, TopicVerdict>();
+    for (const v of raw) {
+      const id = known.has(v.id) ? v.id : (topics.find((t) => t.id.endsWith(v.id.replace(/\D/g, '').padStart(2, '0')))?.id ?? '');
+      if (id && !verdicts.has(id)) verdicts.set(id, { ...v, id });
+    }
+    if (!verdicts.size) return null;
+    this.topicCache = { topics, verdicts };
+    return this.topicCache;
+  }
+
+  /**
+   * Assemble a cut from topic understanding: relevance to the goal, coverage
+   * across topics, and a reserved opening and closing beat.
+   */
+  private async planNarrative(
+    backend: Backend,
+    targetSec: number,
+    fastSpeed: number,
+    mode: 'compress' | 'cut',
+  ): Promise<{ plan: AgentPlanItem[]; resultSec: number; kept: number } | null> {
+    const u = await this.understand(backend);
+    if (!u) return null;
+
+    const live = new Set(
+      this.history.edl.entries.filter((e): e is Extract<typeof e, { kind: 'segment' }> => e.kind === 'segment').map((e) => e.candidateId),
+    );
+    const planned = this.candidates.filter((c) => live.has(c.id));
+    if (!planned.length) return null;
+    const topics = u.topics
+      .map((t) => ({ ...t, candidateIds: t.candidateIds.filter((id) => live.has(id)) }))
+      .filter((t) => t.candidateIds.length);
+
+    const budget = targetSec - Math.max(1, targetSec * 0.005);
+    const build = (keepIds: string[]) => {
+      const fastIds = planned.filter((c) => !keepIds.includes(c.id)).map((c) => c.id);
+      const ops: MutatingOp[] = [{ op: 'classify', definition: `goal-fit ≤ ${Math.round(targetSec)}s`, keyIds: keepIds }];
+      if (keepIds.length) ops.push({ op: 'retime', ids: keepIds, speed: 1 });
+      if (fastIds.length) ops.push(mode === 'cut' ? { op: 'cut', ids: fastIds } : { op: 'retime', ids: fastIds, speed: fastSpeed });
+      return normalize(applyOps(this.history.edl, ops, {}), this.atoms, this.cfg.postprocess);
+    };
+
+    let { keep, reasons } = assembleNarrative(topics, u.verdicts, planned, budget);
+    if (!keep.length) return null;
+
+    // Same closed loop as the greedy planner: measure, don't estimate. Drop
+    // from the LEAST relevant topic first so the arc survives trimming.
+    const relOf = (id: string) => {
+      const t = topics.find((x) => x.candidateIds.includes(id));
+      return t ? (u.verdicts.get(t.id)?.relevance ?? 0) : 0;
+    };
+    let normalized = build(keep);
+    const weakestFirst = [...keep].sort((a, b) => relOf(a) - relOf(b));
+    for (const victim of weakestFirst) {
+      if (outputDuration(normalized) <= budget || keep.length <= 2) break;
+      keep = keep.filter((id) => id !== victim);
+      normalized = build(keep);
+    }
+
+    this.history.commit(normalized, mode === 'cut' ? `cut to fit ${Math.round(targetSec)}s` : `fit under ${Math.round(targetSec)}s`);
+    const keepSet = new Set(keep);
+    this.agentPlan = planned
+      .filter((c) => mode !== 'cut' || keepSet.has(c.id))
+      .map((c) => {
+        const t = topics.find((x) => x.candidateIds.includes(c.id));
+        const v = t ? u.verdicts.get(t.id) : undefined;
+        return {
+          id: c.id,
+          speed: keepSet.has(c.id) ? 1 : fastSpeed,
+          reason: keepSet.has(c.id)
+            ? (reasons.get(c.id) ?? `${v?.label ?? 'Relevant'} — kept at 1×`)
+            : `${v?.label ?? 'Off-goal'} (relevance ${(v?.relevance ?? 0).toFixed(2)}) — compressed ${fastSpeed}×`,
+        };
+      });
+    return { plan: this.agentPlan, resultSec: outputDuration(this.history.edl), kept: keep.length };
   }
 
   private highlightsCache: VideoHighlights | null = null;

@@ -42,6 +42,16 @@ export interface Backend {
   summarizeText?(text: string): Promise<string>;
   /** LLM-as-judge: score a summary against the transcript (debug/metrics) */
   assess?(transcript: string, summary: string): Promise<import('./protocol.js').SummaryAssessment>;
+  /**
+   * Judge every topic against the user's goal in one bounded call. This is the
+   * planner's understanding of the video, and the call most worth pointing at a
+   * stronger model — see TOPICS_SYSTEM.
+   */
+  planTopics?(
+    topics: import('./protocol.js').TopicInput[],
+    goal: string | undefined,
+    totalSec: number,
+  ): Promise<ReturnType<typeof import('./protocol.js').parseTopicsReply>>;
 }
 
 /** Context for a Q&A turn (a question, not an edit request). */

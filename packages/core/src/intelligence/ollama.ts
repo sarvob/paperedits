@@ -11,8 +11,12 @@ import {
   parseHighlightsReply,
   PARTIAL_SUMMARY_SYSTEM,
   JUDGE_SYSTEM,
+  TOPICS_SYSTEM,
   buildJudgePrompt,
+  buildTopicsPrompt,
   parseAssessment,
+  parseTopicsReply,
+  type TopicInput,
   parseModelReply,
   parseSummaryReply,
   SUMMARY_SYSTEM,
@@ -117,6 +121,10 @@ export class OllamaBackend implements Backend {
 
   async summarizeText(text: string): Promise<string> {
     return sanitizeAnswer(await this.chat(PARTIAL_SUMMARY_SYSTEM, text, false));
+  }
+
+  async planTopics(topics: TopicInput[], goal: string | undefined, totalSec: number) {
+    return parseTopicsReply(await this.chat(TOPICS_SYSTEM, buildTopicsPrompt(topics, goal, totalSec)));
   }
 
   async assess(transcript: string, summary: string) {

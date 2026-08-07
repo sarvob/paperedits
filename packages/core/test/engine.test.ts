@@ -10,6 +10,8 @@ import {
   segment,
   validateOps,
   wantsRemoval,
+  buildTopics,
+  assembleNarrative,
   type Op,
 } from '../src/index.js';
 import { buildSentences, insideSentence, snapOutOfWord, topicBoundaries } from '../src/semantic.js';
@@ -389,5 +391,44 @@ describe('a pause after a dangling word is a hesitation, not an ending', () => {
     const sentences = buildSentences(words);
     expect(sentences[0]!.text).toContain('and cheap.');
     expect(sentences.some((s) => /\band$/.test(s.text.trim()))).toBe(false);
+  });
+});
+
+describe('narrative planner', () => {
+  it('merges cohesion dips into topics substantial enough to judge', () => {
+    const analysis = makeAnalysis();
+    const { candidates } = segment(analysis);
+    const topics = buildTopics(analysis, candidates);
+    expect(topics.length).toBeGreaterThan(0);
+    expect(topics.length).toBeLessThanOrEqual(14); // one reply must cover them all
+    // Every candidate belongs to exactly one topic — no content goes unjudged.
+    const assigned = topics.flatMap((t) => t.candidateIds);
+    expect(new Set(assigned).size).toBe(candidates.length);
+  });
+
+  it('reserves an opening and a closing beat, and spreads across topics', () => {
+    const topics = [
+      { id: 't01', start: 0, end: 60, candidateIds: ['a'], text: 'intro' },
+      { id: 't02', start: 60, end: 120, candidateIds: ['b'], text: 'core one' },
+      { id: 't03', start: 120, end: 180, candidateIds: ['c'], text: 'tangent' },
+      { id: 't04', start: 180, end: 240, candidateIds: ['d'], text: 'wrap up' },
+    ];
+    const verdicts = new Map([
+      ['t01', { id: 't01', label: 'Intro', relevance: 0.5, role: 'opening' as const, why: 'orients' }],
+      ['t02', { id: 't02', label: 'Core', relevance: 1.0, role: 'core' as const, why: 'the point' }],
+      ['t03', { id: 't03', label: 'Aside', relevance: 0.05, role: 'aside' as const, why: 'off goal' }],
+      ['t04', { id: 't04', label: 'Wrap', relevance: 0.6, role: 'closing' as const, why: 'concludes' }],
+    ]);
+    const cands = [
+      { id: 'a', start: 0, end: 20 },
+      { id: 'b', start: 60, end: 80 },
+      { id: 'c', start: 120, end: 140 },
+      { id: 'd', start: 180, end: 200 },
+    ] as never as Parameters<typeof assembleNarrative>[2];
+    const { keep } = assembleNarrative(topics, verdicts, cands, 200);
+    expect(keep).toContain('a'); // opening reserved
+    expect(keep).toContain('d'); // closing reserved — the cut resolves
+    expect(keep).not.toContain('c'); // judged off-goal, dropped even with budget
+    expect(keep).toEqual([...keep].sort()); // chronological
   });
 });

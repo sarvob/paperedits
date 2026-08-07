@@ -9,6 +9,7 @@ export * from './apply.js';
 export * from './postprocess.js';
 export * from './history.js';
 export * from './ids.js';
+export * from './narrative.js';
 export * from './render.js';
 export * from './session.js';
 export * from './import.js';

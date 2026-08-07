@@ -117,6 +117,68 @@ the summary: 1-2 sentences, plain prose. If a draft is provided, revise it to
 absorb the new content — do not mention the draft, the transcript, or that this
 is partial.`;
 
+/**
+ * Judge every topic against the user's goal, in ONE call.
+ *
+ * This is the call that most deserves a strong model. It is where "the team is
+ * demoing technical details" versus "the founder is explaining the market" gets
+ * decided, and a 7B model is noticeably worse at that distinction than a
+ * frontier one. It is also cheap to upgrade: ~15 topics in, ~30 tokens of
+ * verdict each, so the whole judgement is a couple of thousand tokens rather
+ * than something that scales with video length.
+ */
+export const TOPICS_SYSTEM = `You are planning an edit. You are given the GOAL the
+user wants the finished video to serve, and a list of TOPICS from the source.
+Judge each topic AGAINST THAT GOAL. Reply with ONLY JSON:
+  {"topics": [{"id": "<topic id>", "label": "<= 6 word chapter title",
+     "relevance": <0..1>, "role": "opening"|"core"|"context"|"aside"|"closing",
+     "why": "<one sentence, specific to this video>"}, ...]}
+RULES:
+- One entry per topic id given, using those exact ids. Do not invent ids.
+- relevance is about the GOAL, not about how lively the footage is. A topic that
+  is interesting but off-goal scores low.
+- Exactly one topic should be "opening" (orients the viewer) and one "closing"
+  (resolves or concludes). Use "aside" for tangents.
+- "why" must cite what is actually said in that topic.`;
+
+export interface TopicInput {
+  id: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
+export function buildTopicsPrompt(topics: TopicInput[], goal: string | undefined, totalSec: number): string {
+  const mm = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  return [
+    `GOAL: ${goal || 'Produce a tight, watchable cut of the most important content.'}`,
+    `Source is ${mm(totalSec)} long, ${topics.length} topics.`,
+    '',
+    ...topics.map((t) => `[${t.id}] ${mm(t.start)}-${mm(t.end)}: ${t.text}`),
+  ].join('\n');
+}
+
+export function parseTopicsReply(raw: string): {
+  id: string;
+  label: string;
+  relevance: number;
+  role: 'opening' | 'core' | 'context' | 'aside' | 'closing';
+  why: string;
+}[] {
+  const parsed = JSON.parse(extractJson(raw)) as { topics?: unknown };
+  const list = Array.isArray(parsed.topics) ? parsed.topics : [];
+  const ROLES = ['opening', 'core', 'context', 'aside', 'closing'] as const;
+  return (list as Record<string, unknown>[])
+    .filter((t) => t && typeof t.id === 'string')
+    .map((t) => ({
+      id: String(t.id),
+      label: String(t.label ?? '').slice(0, 60),
+      relevance: Math.max(0, Math.min(1, Number(t.relevance) || 0)),
+      role: (ROLES as readonly string[]).includes(String(t.role)) ? (t.role as (typeof ROLES)[number]) : 'core',
+      why: String(t.why ?? '').slice(0, 240),
+    }));
+}
+
 export const JUDGE_SYSTEM = `You are a strict evaluator of video summaries.
 Given a transcript (possibly truncated) and a summary of that video, score the
 summary. Reply with ONLY JSON:
