@@ -159,15 +159,15 @@ export class Session {
   /** A proposal awaiting the user's choice (e.g. an infeasible duration target). */
   private pending: { targetSec: number; fastSpeed: number; totalSec: number; minSec: number } | null = null;
 
-  async chat(backend: Backend, message: string, fallback?: Backend): Promise<ChatOutcome> {
+  async chat(backend: Backend, message: string, fallback?: Backend, onToken?: (t: string) => void): Promise<ChatOutcome> {
     this.chatLog.push({ role: 'user', text: message });
-    const out = await this.routeChat(backend, message, fallback);
+    const out = await this.routeChat(backend, message, fallback, onToken);
     this.chatLog.push({ role: 'assistant', text: out.kind === 'answer' ? out.text : out.interpretation });
     if (this.chatLog.length > 16) this.chatLog.splice(0, this.chatLog.length - 16);
     return out;
   }
 
-  private async routeChat(backend: Backend, message: string, fallback?: Backend): Promise<ChatOutcome> {
+  private async routeChat(backend: Backend, message: string, fallback?: Backend, onToken?: (t: string) => void): Promise<ChatOutcome> {
     const t = message.trim().toLowerCase();
     const fmtD = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
@@ -210,7 +210,7 @@ export class Session {
 
     // --- questions → Q&A with conversation + action context ----------------
     if (isQuestion(message)) {
-      const text = await this.answer(backend, message);
+      const text = await this.answer(backend, message, onToken);
       return { kind: 'answer', ok: true, text };
     }
 
@@ -639,7 +639,7 @@ export class Session {
    * Answer a question about the video (chat, not an edit). Uses the backend's
    * `answer` with the digest + cached summary; falls back to the heuristic.
    */
-  async answer(backend: Backend, question: string): Promise<string> {
+  async answer(backend: Backend, question: string, onToken?: (t: string) => void): Promise<string> {
     const summary = this.summaryCache?.summary;
     const ctx = {
       digest: this.digest,
@@ -651,6 +651,14 @@ export class Session {
       lastAction: this.lastAction ?? undefined,
       goal: this.goal ?? undefined,
     };
+    if (onToken && backend.answerStream) {
+      try {
+        const a = await backend.answerStream(ctx, onToken);
+        if (a.trim()) return a.trim();
+      } catch {
+        /* fall through to the non-streaming path */
+      }
+    }
     if (backend.answer) {
       try {
         const a = await backend.answer(ctx);

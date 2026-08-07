@@ -15,6 +15,7 @@ import {
   type Op,
 } from '../src/index.js';
 import { buildSentences, insideSentence, snapOutOfWord, topicBoundaries } from '../src/semantic.js';
+import { buildAnswerPrompt } from '../src/intelligence/protocol.js';
 import { makeAnalysis } from './fixture.js';
 
 describe('segmentation', () => {
@@ -430,5 +431,27 @@ describe('narrative planner', () => {
     expect(keep).toContain('d'); // closing reserved — the cut resolves
     expect(keep).not.toContain('c'); // judged off-goal, dropped even with budget
     expect(keep).toEqual([...keep].sort()); // chronological
+  });
+});
+
+describe('prompt cache ordering', () => {
+  it('puts the stable digest BEFORE volatile conversation/last-action', () => {
+    const session = new Session(makeAnalysis());
+    const p = buildAnswerPrompt({
+      digest: session.digest,
+      summary: 'a summary',
+      question: 'what is this about?',
+      conversation: [{ role: 'user', text: 'hi' }],
+      lastAction: 'kept 6 segments',
+      goal: 'business content',
+    });
+    // The digest is ~98% of the prompt and never changes; conversation and
+    // last action change every turn. Volatile-first invalidated the KV prefix
+    // cache each turn — 31.7s of re-prefill against ~3s of generation.
+    expect(p.indexOf('<digest')).toBeLessThan(p.indexOf('<conversation>'));
+    expect(p.indexOf('<digest')).toBeLessThan(p.indexOf('<last_action>'));
+    expect(p.indexOf('</digest>')).toBeLessThan(p.indexOf('Question:'));
+    // The question must still come last, per ANSWER_SYSTEM.
+    expect(p.indexOf('Question:')).toBeGreaterThan(p.indexOf('<conversation>'));
   });
 });

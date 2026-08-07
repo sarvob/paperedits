@@ -30,6 +30,7 @@ interface PveApi {
   redo(): Promise<(Snapshot & { label?: string }) | null>;
   setSpeed(id: string, speed: number): Promise<Snapshot | null>;
   outbound(i: string): Promise<{ network: boolean; text: string }>;
+  onChatToken(cb: (t: string) => void): () => void;
   chat(message: string): Promise<{ ok: boolean; kind?: 'edit' | 'answer'; text?: string; usedFallback?: boolean; error?: string } & Partial<Snapshot>>;
   ollamaModels(): Promise<{ ok: boolean; models: string[] }>;
   setBackend(kind: string, config: unknown): Promise<{ ok: boolean; name?: string; network?: boolean; error?: string }>;
@@ -909,14 +910,30 @@ async function sendChat() {
   addMsg('user', text);
   input.value = '';
   const thinking = addMsg('bot thinking', 'thinking…');
-  const res = await pve.chat(text);
+  // Answers stream token by token; the first words land long before the full
+  // reply, so the bubble turns into the answer in place rather than sitting on
+  // "thinking…" for the whole generation.
+  let streamed = '';
+  const off = pve.onChatToken((tok) => {
+    streamed += tok;
+    thinking.className = 'msg bot';
+    thinking.textContent = streamed;
+    $('chatLog').scrollTop = $('chatLog').scrollHeight;
+  });
+  let res;
+  try {
+    res = await pve.chat(text);
+  } finally {
+    off();
+  }
   thinking.remove();
   if (!res || !res.ok) { addMsg('bot err', (res as { error?: string })?.error || 'something went wrong'); return; }
   if (res.kind === 'edit') {
     addMsg('bot edit', `✓ ${res.text}${res.usedFallback ? '  (heuristic)' : ''}`);
     apply(res as unknown as Snapshot, { keepPlayhead: true });
   } else {
-    addMsg('bot', res.text || '(no answer)');
+    // Prefer the final (sanitized) text over the raw stream.
+    addMsg('bot', res.text || streamed || '(no answer)');
   }
 }
 

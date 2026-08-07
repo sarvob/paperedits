@@ -316,10 +316,16 @@ ipcMain.handle('ollama:models', async () => {
   }
 });
 
-ipcMain.handle('chat:send', async (_e, message: string) => {
+ipcMain.handle('chat:send', async (e, message: string) => {
   if (!session) return { ok: false, error: 'no file imported' };
   try {
-    const res = await session.chat(currentBackend, message, heuristicBackend);
+    // Stream answer tokens to the renderer as they arrive. Generation is only
+    // a few seconds once the prefix is cached, but showing the first words
+    // immediately is what makes it read as fast.
+    const onToken = (t: string) => {
+      if (!e.sender.isDestroyed()) e.sender.send('chat:token', t);
+    };
+    const res = await session.chat(currentBackend, message, heuristicBackend, onToken);
     if (res.kind === 'edit') {
       return { ok: true, kind: 'edit', text: res.interpretation, usedFallback: res.usedFallback, ...snapshot()! };
     }

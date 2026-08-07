@@ -36,6 +36,8 @@ export interface Backend {
   summarize?(digest: Digest): Promise<VideoSummary>;
   /** answer a question about the video (chat, not an edit) */
   answer?(ctx: AnswerContext): Promise<string>;
+  /** same, but emits tokens as they arrive so the UI can render progressively */
+  answerStream?(ctx: AnswerContext, onToken: (t: string) => void): Promise<string>;
   /** ranked key moments with reasons (which segments matter and why) */
   highlights?(digest: Digest): Promise<VideoHighlights>;
   /** summarize a raw text snippet (used for progressive partial summaries) */

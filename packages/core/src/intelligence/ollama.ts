@@ -63,6 +63,73 @@ export class OllamaBackend implements Backend {
 
   constructor(private cfg: OllamaConfig) {}
 
+  /**
+   * Streaming variant: emits tokens as they arrive so the UI can show the
+   * answer forming. Generation is only ~3s once the prefix is cached, but
+   * waiting for the whole reply before showing anything makes even that feel
+   * slow — first token on screen is what "instant" means to a reader.
+   */
+  private chatStream(system: string, user: string, onToken: (t: string) => void): Promise<string> {
+    return enqueue(async () => {
+      const host = (this.cfg.host ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
+      const doFetch = this.cfg.fetchImpl ?? fetch;
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), this.cfg.timeoutMs ?? 180_000);
+      try {
+        const res = await doFetch(`${host}/api/chat`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          signal: ac.signal,
+          body: JSON.stringify({
+            model: this.cfg.model,
+            stream: true,
+            options: { temperature: 0.3, num_ctx: 16384 },
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+          }),
+        });
+        if (!res.ok || !res.body) throw new Error(`ollama returned ${res.status} ${res.statusText}`);
+        const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        let full = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          // Ollama streams newline-delimited JSON objects.
+          const lines = buf.split('\n');
+          buf = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const obj = JSON.parse(line) as { message?: { content?: string } };
+              const piece = obj.message?.content ?? '';
+              if (piece) {
+                full += piece;
+                onToken(piece);
+              }
+            } catch {
+              /* partial line — ignore */
+            }
+          }
+        }
+        return full;
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') throw new Error(`${this.cfg.model} timed out`);
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
+    });
+  }
+
+  async answerStream(ctx: AnswerContext, onToken: (t: string) => void): Promise<string> {
+    return sanitizeAnswer(await this.chatStream(ANSWER_SYSTEM, buildAnswerPrompt(ctx), onToken));
+  }
+
   private chat(system: string, user: string, json = true): Promise<string> {
     return enqueue(async () => {
       const host = (this.cfg.host ?? 'http://127.0.0.1:11434').replace(/\/$/, '');

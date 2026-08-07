@@ -42,6 +42,11 @@ contextBridge.exposeInMainWorld('pve', {
   setSpeed: (entryId: string, speed: number) => ipcRenderer.invoke('session:setSpeed', entryId, speed),
   outbound: (instruction: string) => ipcRenderer.invoke('session:outbound', instruction),
   chat: (message: string) => ipcRenderer.invoke('chat:send', message),
+  onChatToken: (cb: (t: string) => void) => {
+    const listener = (_e: unknown, t: string) => cb(t);
+    ipcRenderer.on('chat:token', listener);
+    return () => ipcRenderer.removeListener('chat:token', listener);
+  },
   ollamaModels: () => ipcRenderer.invoke('ollama:models'),
   setBackend: (kind: string, config: unknown) => ipcRenderer.invoke('settings:setBackend', kind, config),
   currentBackend: () => ipcRenderer.invoke('backend:current'),

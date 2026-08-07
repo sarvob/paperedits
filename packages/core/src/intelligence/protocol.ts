@@ -227,15 +227,24 @@ export function buildAnswerPrompt(ctx: {
     .join('\n');
   // Context sections are wrapped in tags and the question comes LAST with an
   // explicit answer-only instruction — small models otherwise echo the labels.
+  // ORDER IS LOAD-BEARING: most-stable content first, most-volatile last.
+  //
+  // The digest is ~98% of this prompt and never changes for a file; the
+  // conversation and last action change every single turn. With the volatile
+  // parts in front, each turn invalidated the whole KV prefix cache and the
+  // model re-read the entire digest before writing a word. Measured on a
+  // 30-min video: identical prompt re-prefilled in 0.1s, but changing one word
+  // of last_action pushed it back to 31.7s — against ~3s of actual generation.
+  // Digest-first keeps the expensive prefix cached across the conversation.
   return [
-    ctx.goal ? `<user_goal>\n${ctx.goal}\n</user_goal>\n` : '',
-    ctx.summary ? `<summary>\n${ctx.summary}\n</summary>\n` : '',
-    ctx.lastAction ? `<last_action>\n${ctx.lastAction}\n</last_action>\n` : '',
-    convo ? `<conversation>\n${convo}\n</conversation>\n` : '',
     `<digest segments="${ctx.digest.entries.length}" duration_sec="${Math.round(ctx.digest.durationSec)}">`,
     digestToPrompt(ctx.digest),
     `</digest>`,
     '',
+    ctx.summary ? `<summary>\n${ctx.summary}\n</summary>\n` : '',
+    ctx.goal ? `<user_goal>\n${ctx.goal}\n</user_goal>\n` : '',
+    ctx.lastAction ? `<last_action>\n${ctx.lastAction}\n</last_action>\n` : '',
+    convo ? `<conversation>\n${convo}\n</conversation>\n` : '',
     `Question: ${ctx.question}`,
     `Write ONLY the answer, in plain prose. Never repeat, quote, or mention the sections, tags, or labels above.`,
   ].join('\n');
