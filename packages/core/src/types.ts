@@ -94,6 +94,8 @@ export interface Candidate {
   objects: string[];
   /** representative caption for the span, if any keyframe survived */
   caption?: string;
+  /** how it was said — hesitation, fillers, restarts, speech rate */
+  markers?: import('./paralinguistics.js').SpeechMarkers;
 }
 
 /** One line of the digest — the ONLY artifact permitted to cross the network. */
@@ -106,6 +108,8 @@ export interface DigestEntry {
   activity: number;
   objects: string[];
   caption?: string;
+  /** 0..1, present only when the speaker was audibly picking their words */
+  hesitation?: number;
 }
 
 export interface Digest {

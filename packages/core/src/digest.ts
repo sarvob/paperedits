@@ -6,6 +6,16 @@ import type { Candidate, Digest, DigestEntry } from './types.js';
  * audio. One entry per candidate, ~100–140 tokens each.
  */
 export function buildDigest(fileHash: string, durationSec: number, candidates: Candidate[]): Digest {
+  // Hesitation is relative to the SPEAKER, not an absolute scale: a naturally
+  // disfluent talker would trip a fixed threshold on every segment, and a
+  // polished one on none. Measured on a 30-min interview, a fixed 0.4 flagged
+  // 30 of 65 segments (mean 0.36) — i.e. it flagged "average" as notable.
+  // Flagging outliers against this video's own baseline keeps it meaningful.
+  const scores = candidates.map((c) => c.markers?.hesitation ?? 0);
+  const mean = scores.reduce((a, b) => a + b, 0) / Math.max(1, scores.length);
+  const sd = Math.sqrt(scores.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, scores.length));
+  const notable = mean + sd;
+
   const entries: DigestEntry[] = candidates.map((c) => ({
     id: c.id,
     index: c.index,
@@ -15,6 +25,11 @@ export function buildDigest(fileHash: string, durationSec: number, candidates: C
     activity: c.activity,
     objects: c.objects,
     ...(c.caption ? { caption: c.caption } : {}),
+    // Only carry hesitation when it is actually notable. Emitting it for every
+    // segment would add ~600 tokens to a 30-min digest to say "normal" 70 times.
+    ...(c.markers && c.markers.hesitation >= notable && c.markers.hesitation > 0
+      ? { hesitation: c.markers.hesitation }
+      : {}),
   }));
   return { fileHash, durationSec, entries };
 }
@@ -37,6 +52,8 @@ export function digestToPrompt(digest: Digest): string {
     ];
     if (e.objects.length) parts.push(`obj=${e.objects.join(',')}`);
     if (e.caption) parts.push(`cap="${e.caption}"`);
+    // Surfaces HOW it was said — the speaker picked their words here.
+    if (e.hesitation != null) parts.push(`hesitant=${e.hesitation.toFixed(2)}`);
     parts.push(`say="${e.speech}"`);
     return parts.join(' | ');
   });

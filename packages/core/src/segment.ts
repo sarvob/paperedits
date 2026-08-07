@@ -1,3 +1,4 @@
+import { speechMarkers } from './paralinguistics.js';
 import { buildSentences, insideSentence, isDangling, snapOutOfWord, topicBoundaries } from './semantic.js';
 import type { Analysis, Atom, Candidate, Word } from './types.js';
 
@@ -220,6 +221,7 @@ export function buildCandidates(
       activity: Number(meanActivity(analysis.activityPerSec, start, end).toFixed(3)),
       objects,
       caption,
+      markers: speechMarkers(analysis.words, start, end),
     } satisfies Candidate;
   });
 }

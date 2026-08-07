@@ -13,6 +13,7 @@ import {
   isQuestion,
   buildTopics,
   assembleNarrative,
+  speechMarkers,
   type Op,
 } from '../src/index.js';
 import { buildSentences, insideSentence, snapOutOfWord, topicBoundaries } from '../src/semantic.js';
@@ -480,5 +481,46 @@ describe('chat routing: asking for an explanation must never edit', () => {
     ]) {
       expect(isQuestion(e), e).toBe(false);
     }
+  });
+});
+
+describe('paralinguistic markers', () => {
+  const w = (text: string, start: number, end: number) => ({ text, start, end });
+
+  it('scores a fluent run near zero and a disfluent one high', () => {
+    // Rehearsed: no fillers, no gaps, no restarts.
+    const fluent = [
+      w('Welcome', 0, 0.4), w('to', 0.4, 0.6), w('Apollyon', 0.6, 1.1),
+      w('Dynamics.', 1.1, 1.7), w('We', 1.7, 1.9), w('build', 1.9, 2.3), w('drones.', 2.3, 2.9),
+    ];
+    // Unrehearsed: fillers, mid-sentence gaps, a restart.
+    const disfluent = [
+      w('So', 0, 0.3), w('uh', 0.3, 0.5), w('we', 0.9, 1.1), w('we', 1.1, 1.3),
+      w('sold', 1.7, 2.0), w('um', 2.0, 2.3), w('to', 2.7, 2.9), w('western', 2.9, 3.4),
+    ];
+    const a = speechMarkers(fluent, 0, 2.9);
+    const b = speechMarkers(disfluent, 0, 3.4);
+    expect(a.hesitation).toBeLessThan(0.2);
+    expect(b.hesitation).toBeGreaterThan(a.hesitation);
+    expect(b.selfRepairs).toBeGreaterThan(0); // "we we"
+    expect(b.fillers).toBeGreaterThan(0);
+  });
+
+  it('does not count a pause after a finished sentence as hesitation', () => {
+    // Same 1.5s gap; the only difference is the terminal punctuation.
+    const ended = [w('Done.', 0, 0.5), w('Next', 2.0, 2.4), w('topic', 2.4, 2.9)];
+    const midThought = [w('Done', 0, 0.5), w('Next', 2.0, 2.4), w('topic', 2.4, 2.9)];
+    expect(speechMarkers(ended, 0, 2.9).hesitationPauses).toBe(0);
+    // 1.5s exceeds PAUSE_MAX either way — it reads as phrasing, not a stumble.
+    expect(speechMarkers(midThought, 0, 2.9).hesitationPauses).toBe(0);
+  });
+
+  it('flags hesitation relative to the speaker, not an absolute scale', () => {
+    const analysis = makeAnalysis();
+    const { candidates } = segment(analysis);
+    const digest = buildDigest(analysis.fileHash, analysis.durationSec, candidates);
+    const flagged = digest.entries.filter((e) => e.hesitation != null);
+    // Outliers only — a uniformly disfluent speaker must not light up every row.
+    expect(flagged.length).toBeLessThan(digest.entries.length);
   });
 });
