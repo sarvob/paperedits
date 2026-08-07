@@ -199,14 +199,23 @@ export function sanitizeAnswer(raw: string): string {
 // Video summary (overview + per-moment one-liners)
 // ---------------------------------------------------------------------------
 
+/**
+ * The overview ONLY — deliberately not one label per segment.
+ *
+ * Asking for a label per segment in this same call makes the response scale
+ * with the length of the video: on a 30-min source that was 1497 output tokens
+ * versus roughly 60 for the overview, and since generation is the slow part it
+ * turned the thing the user actually reads into a ~3-minute wait. Per-segment
+ * labels are mechanical text derived from each segment's own speech, so the
+ * heuristic writes them instantly and the model is left to do judgement.
+ */
 export const SUMMARY_SYSTEM = `You summarize a video from a digest of its segments.
 Return ONLY a JSON object:
-  {"summary": "<1-2 sentence overview of what the whole video is about>",
-   "moments": [{"id": "<segment id>", "label": "<= 8 word summary of that moment>"}, ...]}
+  {"summary": "<1-2 sentence overview of what the whole video is about>"}
 RULES:
-- Use ONLY the segment ids given. Include one moment per segment, in order.
-- Labels are terse, specific, human — like chapter titles. No "Segment 1".
-- Base everything on the provided speech/objects; do not invent content.`;
+- Two sentences at most. Say what the video IS and what it covers.
+- Base everything on the provided speech/objects; do not invent content.
+- Do not list segments, timestamps, or per-moment detail.`;
 
 /** Build the summary request payload (digest text). */
 export function buildSummaryPrompt(digest: Digest): string {

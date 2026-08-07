@@ -373,3 +373,21 @@ describe('cuts land where meaning is complete', () => {
     expect(Math.min(...shifts.map((i) => Math.abs(i - 10)))).toBeLessThanOrEqual(2);
   });
 });
+
+describe('a pause after a dangling word is a hesitation, not an ending', () => {
+  it('does not end a sentence on a conjunction the speaker paused after', () => {
+    const words = [
+      { start: 0, end: 0.4, text: 'make' },
+      { start: 0.4, end: 0.8, text: 'it' },
+      { start: 0.8, end: 1.3, text: 'lightweight' },
+      { start: 1.3, end: 1.6, text: 'and' },
+      // long pause here — a naive rule would cut after "and"
+      { start: 3.0, end: 3.4, text: 'cheap.' },
+      { start: 3.5, end: 3.9, text: 'So' },
+      { start: 3.9, end: 4.4, text: 'anyway.' },
+    ];
+    const sentences = buildSentences(words);
+    expect(sentences[0]!.text).toContain('and cheap.');
+    expect(sentences.some((s) => /\band$/.test(s.text.trim()))).toBe(false);
+  });
+});

@@ -24,6 +24,28 @@ export interface OllamaConfig {
   host?: string;
   model: string;
   fetchImpl?: typeof fetch;
+  /** give up on a stalled request instead of hanging forever (ms) */
+  timeoutMs?: number;
+}
+
+/**
+ * One local model server means one request at a time.
+ *
+ * Firing two 16K-context requests concurrently doesn't just queue them — it
+ * thrashes. Measured on a 30-min digest: run sequentially, summary takes ~14s
+ * and highlights ~13s; fired together, highlights took 99s and the summary
+ * never came back at all, leaving the UI on "Summarizing…" forever. Every
+ * Ollama call therefore goes through this chain.
+ */
+let ollamaQueue: Promise<unknown> = Promise.resolve();
+function enqueue<T>(job: () => Promise<T>): Promise<T> {
+  const run = ollamaQueue.then(job, job);
+  // Keep the chain alive even when a job rejects.
+  ollamaQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
 /**
@@ -37,29 +59,44 @@ export class OllamaBackend implements Backend {
 
   constructor(private cfg: OllamaConfig) {}
 
-  private async chat(system: string, user: string, json = true): Promise<string> {
-    const host = (this.cfg.host ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
-    const doFetch = this.cfg.fetchImpl ?? fetch;
-    const res = await doFetch(`${host}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: this.cfg.model,
-        stream: false,
-        // num_ctx: Ollama defaults to a small context (2-4K) which silently
-        // TRUNCATES a 30-min video's ~10K-token digest — answers then only
-        // "see" the first minutes. 16K covers an hour-long video's digest.
-        options: { temperature: json ? 0 : 0.3, num_ctx: 16384 },
-        ...(json ? { format: 'json' } : {}),
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-      }),
+  private chat(system: string, user: string, json = true): Promise<string> {
+    return enqueue(async () => {
+      const host = (this.cfg.host ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
+      const doFetch = this.cfg.fetchImpl ?? fetch;
+      const timeoutMs = this.cfg.timeoutMs ?? 180_000;
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), timeoutMs);
+      try {
+        const res = await doFetch(`${host}/api/chat`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          signal: ac.signal,
+          body: JSON.stringify({
+            model: this.cfg.model,
+            stream: false,
+            // num_ctx: Ollama defaults to a small context (2-4K) which silently
+            // TRUNCATES a 30-min video's ~10K-token digest — answers then only
+            // "see" the first minutes. 16K covers an hour-long video's digest.
+            options: { temperature: json ? 0 : 0.3, num_ctx: 16384 },
+            ...(json ? { format: 'json' } : {}),
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+          }),
+        });
+        if (!res.ok) throw new Error(`ollama returned ${res.status} ${res.statusText}`);
+        const data = (await res.json()) as { message?: { content?: string } };
+        return data.message?.content ?? '';
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') {
+          throw new Error(`${this.cfg.model} did not respond within ${Math.round(timeoutMs / 1000)}s`);
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
     });
-    if (!res.ok) throw new Error(`ollama returned ${res.status} ${res.statusText}`);
-    const data = (await res.json()) as { message?: { content?: string } };
-    return data.message?.content ?? '';
   }
 
   async plan(ctx: PlanContext): Promise<Patch> {

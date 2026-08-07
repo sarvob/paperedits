@@ -20,6 +20,26 @@ export interface Sentence {
 
 const SENTENCE_END = /[.!?]["')\]]?$/;
 
+/**
+ * Words a thought cannot end on.
+ *
+ * Speakers hesitate mid-clause — "…to make it lightweight and <pause>" — and a
+ * pure pause rule treats that as a finished sentence, so the cut lands on a
+ * dangling conjunction. Measured in the exported cut: "...to make it lightweight
+ * and" ran straight into "So I do all that stuff here." If the last word is a
+ * function word, the speaker is still mid-thought; keep going.
+ */
+const DANGLING = new Set(
+  ('and but or so nor yet for to of in on at by with from as that which who because if when while ' +
+    'the a an is are was were be been being it its this these those my your our their his her we they i ' +
+    'not no very just like about into over under than then also plus per via')
+    .split(' '),
+);
+
+export function isDangling(word: string): boolean {
+  return DANGLING.has(word.toLowerCase().replace(/[^a-z']/g, ''));
+}
+
 // Deliberately small: these carry no topic signal, so leaving them in makes
 // every pair of sentences look similar and washes out the shift detection.
 const STOPWORDS = new Set(
@@ -57,7 +77,11 @@ export function buildSentences(words: Word[], pauseSec = 0.7, maxSec = 20): Sent
     const next = words[i + 1];
     const pause = next ? next.start - w.end : Infinity;
     const tooLong = w.end - cur[0]!.start >= maxSec;
-    if (SENTENCE_END.test(w.text) || pause >= pauseSec || tooLong) flush();
+    // Punctuation always ends a thought. A pause only ends one if the speaker
+    // isn't left hanging on a conjunction or article — and `tooLong` is a
+    // safety valve that must still fire, or a run-on never breaks.
+    const pauseEnds = pause >= pauseSec && !isDangling(w.text);
+    if (SENTENCE_END.test(w.text) || pauseEnds || tooLong) flush();
   }
   flush();
   return out;

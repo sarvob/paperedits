@@ -612,7 +612,7 @@ function renderEdl(s: Snapshot) {
 /** Fetch + render the LLM-ranked key moments (which segments matter and why). */
 async function requestHighlights(force = false) {
   $('hlSrc').textContent = 'ranking…';
-  const res = await pve.highlights(force);
+  const res = await pve.highlights(force).catch((e: Error) => ({ highlights: [], error: e.message }));
   if (!res) return;
   currentHighlights = res.highlights || [];
   $('hlSrc').textContent = res.error ? `(${res.error.slice(0, 60)})` : `via ${res.source ?? 'heuristic'}`;
@@ -770,10 +770,18 @@ async function requestSummary(force = false) {
     textEl.className = 'summary-text loading';
     textEl.textContent = 'Summarizing…';
   }
-  const res = await pve.summarize(force);
+  // An LLM call can stall. Never leave the panel on "Summarizing…" forever —
+  // say what went wrong and leave the ↻ button as the way out.
+  const res = await pve.summarize(force).catch((e: Error) => ({ summary: '', moments: [], error: e.message }));
   if (!res) { $('summary').hidden = true; return; }
+  if (res.error || !res.summary) {
+    textEl.className = 'summary-text';
+    textEl.textContent = `Couldn't summarize — ${res.error || 'the model returned nothing'}. Press ↻ to retry.`;
+    $('summarySrc').textContent = 'failed';
+    return;
+  }
   textEl.className = 'summary-text';
-  textEl.textContent = res.summary || '(no summary)';
+  textEl.textContent = res.summary;
   const active = ($('backendSel') as HTMLSelectElement).value;
   $('summarySrc').textContent = active === 'heuristic' ? 'from transcript' : `via ${active}`;
   finalSummaryShown = true;
@@ -874,8 +882,10 @@ async function importPath(path: string) {
   thumbs = null;
   finalSummaryShown = false;
   renderHighlights();
-  requestSummary();
-  requestHighlights();
+  // Sequential, not parallel: these both hit the one local model server, and
+  // racing them stalls it (see the queue in OllamaBackend). Summary first so
+  // the user gets the thing they read first, first.
+  requestSummary().then(() => requestHighlights());
   // Filmstrip thumbnails extract in the background (cached per file after that).
   pve.thumbsEnsure().then((t) => {
     thumbs = t;

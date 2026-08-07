@@ -386,26 +386,20 @@ export class Session {
    */
   async summarize(backend: Backend, force = false): Promise<VideoSummary> {
     if (this.summaryCache && !force) return this.summaryCache;
+    // Per-segment labels come from the heuristic ALWAYS: they are mechanical
+    // (each segment's own speech), and asking the model for one per segment
+    // made the response — and so the wait — scale with video length.
+    const base = await new HeuristicBackend().summarize(this.digest);
     let result: VideoSummary | null = null;
     if (backend.summarize) {
       try {
-        result = await backend.summarize(this.digest);
+        const llm = await backend.summarize(this.digest);
+        if (llm.summary.trim()) result = { summary: llm.summary.trim(), moments: base.moments };
       } catch {
         result = null;
       }
     }
-    if (!result || !result.moments.length) {
-      result = await new HeuristicBackend().summarize(this.digest);
-    }
-    // Ensure every candidate has a label (fill gaps from the heuristic).
-    const have = new Set(result.moments.map((m) => m.id));
-    if (this.digest.entries.some((e) => !have.has(e.id))) {
-      const fallback = await new HeuristicBackend().summarize(this.digest);
-      const fmap = new Map(fallback.moments.map((m) => [m.id, m.label]));
-      result.moments = this.digest.entries.map(
-        (e) => result!.moments.find((m) => m.id === e.id) ?? { id: e.id, label: fmap.get(e.id) ?? '' },
-      );
-    }
+    if (!result) result = base;
     this.summaryCache = result;
     return result;
   }

@@ -1,4 +1,4 @@
-import { buildSentences, insideSentence, snapOutOfWord, topicBoundaries } from './semantic.js';
+import { buildSentences, insideSentence, isDangling, snapOutOfWord, topicBoundaries } from './semantic.js';
 import type { Analysis, Atom, Candidate, Word } from './types.js';
 
 /** Tunables for segmentation. Exposed so heuristic mode / UI can adjust them. */
@@ -50,7 +50,9 @@ export function buildAtoms(analysis: Analysis, cfg: SegmentConfig = DEFAULT_SEGM
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!;
     const next = words[i + 1];
-    if (next && next.start - w.end >= cfg.silenceGapSec) {
+    // A pause after a dangling conjunction is a hesitation, not a finished
+    // thought — cutting there strands the listener mid-clause.
+    if (next && next.start - w.end >= cfg.silenceGapSec && !isDangling(w.text)) {
       marks.push({ at: w.end, reason: 'silence' });
     } else if (SENTENCE_END.test(w.text)) {
       marks.push({ at: w.end, reason: 'sentence' });
