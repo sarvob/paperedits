@@ -524,3 +524,54 @@ describe('paralinguistic markers', () => {
     expect(flagged.length).toBeLessThan(digest.entries.length);
   });
 });
+
+describe('adapts to the video, not to one video', () => {
+  const synth = (durationSec: number) => {
+    // Uniform speech across the whole duration, vocabulary shifting every ~30s
+    // so cohesion has something to find at any length.
+    const words = [];
+    for (let t = 0; t < durationSec; t += 0.4) {
+      const topic = Math.floor(t / 30);
+      const i = Math.round(t * 10);
+      words.push({ text: i % 12 === 11 ? `word${topic}.` : `word${topic}x${i % 7}`, start: t, end: t + 0.35 });
+    }
+    return {
+      fileHash: 'h', durationSec, hasAudio: true, words,
+      activityPerSec: Array(Math.ceil(durationSec)).fill(0.5),
+      audioLevels: Array(Math.ceil(durationSec)).fill(0.5),
+      sceneCuts: [], detections: [], captions: [],
+    };
+  };
+
+  it('gives short clips a usable topic map instead of collapsing to one', () => {
+    // A fixed 90s minimum silently disabled the narrative planner below ~3 min:
+    // one topic means understand() bails and the greedy planner takes over.
+    for (const sec of [60, 180, 600]) {
+      const a = synth(sec);
+      const { candidates } = segment(a);
+      const topics = buildTopics(a, candidates);
+      expect(topics.length, `${sec}s`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('keeps the topic count bounded as videos get long', () => {
+    // The bound is what lets one model reply carry a verdict for every topic.
+    for (const sec of [1800, 3600, 10800]) {
+      const a = synth(sec);
+      const { candidates } = segment(a);
+      expect(buildTopics(a, candidates).length, `${sec}s`).toBeLessThanOrEqual(14);
+    }
+  });
+
+  it('flags hesitation by percentile, so a uniformly disfluent speaker still ranks', () => {
+    // Every span equally disfluent → sd collapses to 0, and a mean+sd rule
+    // flags all or nothing. Percentile keeps discriminating.
+    const flat = Array.from({ length: 10 }, (_, i) => ({
+      id: `c${i}`, index: i, start: i * 10, end: i * 10 + 10, atomIds: [],
+      speechPreview: 'x', activity: 0.5, objects: [],
+      markers: { fillers: 9, hesitationPauses: 9, selfRepairs: 9, rate: 3, hesitation: 1 },
+    }));
+    const d = buildDigest('h', 100, flat as never);
+    expect(d.entries.filter((e) => e.hesitation != null).length).toBeLessThan(d.entries.length);
+  });
+});

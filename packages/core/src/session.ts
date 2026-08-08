@@ -578,7 +578,7 @@ export class Session {
       return normalize(applyOps(this.history.edl, ops, {}), this.atoms, this.cfg.postprocess);
     };
 
-    let { keep, reasons } = assembleNarrative(topics, u.verdicts, planned, budget);
+    let { keep, reasons, arc } = assembleNarrative(topics, u.verdicts, planned, budget);
     if (!keep.length) return null;
 
     // Same closed loop as the greedy planner: measure, don't estimate. Drop
@@ -588,7 +588,17 @@ export class Session {
       return t ? (u.verdicts.get(t.id)?.relevance ?? 0) : 0;
     };
     let normalized = build(keep);
-    const weakestFirst = [...keep].sort((a, b) => relOf(a) - relOf(b));
+    // Trim non-arc segments first. Ordering purely by relevance discarded the
+    // CLOSING beat (0.90) before a higher-scoring mid-video topic (1.00), so
+    // the cut ended wherever the budget ran out — undoing the reservation that
+    // assembleNarrative had just made.
+    const isArc = new Set(arc);
+    const weakestFirst = [...keep].sort((a, b) => {
+      const aArc = isArc.has(a) ? 1 : 0;
+      const bArc = isArc.has(b) ? 1 : 0;
+      if (aArc !== bArc) return aArc - bArc;
+      return relOf(a) - relOf(b);
+    });
     for (const victim of weakestFirst) {
       if (outputDuration(normalized) <= budget || keep.length <= 2) break;
       keep = keep.filter((id) => id !== victim);

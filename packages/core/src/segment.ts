@@ -150,6 +150,12 @@ export function buildCandidates(
   atoms: Atom[],
   cfg: SegmentConfig = DEFAULT_SEGMENT_CONFIG,
 ): Candidate[] {
+  // A flat 90s ceiling means a 60-second clip of continuous speech collapses to
+  // ONE candidate — no cut points, so every downstream stage (topics, planning,
+  // retiming) has nothing to work with. Scale the ceiling down for short
+  // sources; this only ever tightens, so anything over ~12 minutes keeps the
+  // 90s behaviour verified on real footage.
+  const maxCandidateSec = Math.min(cfg.maxCandidateSec, Math.max(10, analysis.durationSec / 8));
   const groups: Atom[][] = [];
   let current: Atom[] = [];
 
@@ -161,7 +167,7 @@ export function buildCandidates(
     const spanStart = current[0]!.start;
     // The boundary at `atom.start` is the END reason of the previous atom.
     const boundaryReason = current[current.length - 1]!.reason;
-    const wouldBeLong = atom.end - spanStart > cfg.maxCandidateSec;
+    const wouldBeLong = atom.end - spanStart > maxCandidateSec;
     // Only atoms whose END is a scene cut count — consulting the raw scene-cut
     // list here would re-introduce the mid-sentence breaks that buildAtoms
     // deliberately filtered out.

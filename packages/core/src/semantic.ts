@@ -107,7 +107,18 @@ function cohesion(a: string[], b: string[]): number {
  *
  * Returns indices i meaning "a topic starts at sentence i".
  */
-export function topicBoundaries(sentences: Sentence[], window = 3): number[] {
+export function topicBoundaries(sentences: Sentence[], window?: number): number[] {
+  // A fixed window of 3 needs 7 sentences before it can report anything, so
+  // short clips silently produced zero boundaries. Scale it to what's there.
+  // Cap at 3 — the width verified on real footage. Widening it on long videos
+  // produced broader topic spans and coarser candidates (54 where 65 gave the
+  // editor room to work). This only ever NARROWS, for short clips that don't
+  // have enough sentences to fill a 3-wide window.
+  const w = window ?? Math.max(2, Math.min(3, Math.floor(sentences.length / 6)));
+  return topicBoundariesWithWindow(sentences, w);
+}
+
+function topicBoundariesWithWindow(sentences: Sentence[], window: number): number[] {
   if (sentences.length < window * 2 + 1) return [];
   const scores: { i: number; score: number }[] = [];
   for (let i = window; i <= sentences.length - window; i++) {

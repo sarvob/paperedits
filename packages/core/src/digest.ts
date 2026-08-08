@@ -11,10 +11,12 @@ export function buildDigest(fileHash: string, durationSec: number, candidates: C
   // polished one on none. Measured on a 30-min interview, a fixed 0.4 flagged
   // 30 of 65 segments (mean 0.36) — i.e. it flagged "average" as notable.
   // Flagging outliers against this video's own baseline keeps it meaningful.
-  const scores = candidates.map((c) => c.markers?.hesitation ?? 0);
-  const mean = scores.reduce((a, b) => a + b, 0) / Math.max(1, scores.length);
-  const sd = Math.sqrt(scores.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, scores.length));
-  const notable = mean + sd;
+  // Percentile, not mean+sd: a uniformly disfluent speaker saturates the score,
+  // which collapses the standard deviation to ~0 and makes mean+sd flag either
+  // everything or nothing. Taking the top fifth is stable under any
+  // distribution shape, including that degenerate one.
+  const scores = candidates.map((c) => c.markers?.hesitation ?? 0).sort((a, b) => a - b);
+  const notable = scores.length ? (scores[Math.floor(scores.length * 0.8)] ?? 1) : 1;
 
   const entries: DigestEntry[] = candidates.map((c) => ({
     id: c.id,
@@ -27,7 +29,7 @@ export function buildDigest(fileHash: string, durationSec: number, candidates: C
     ...(c.caption ? { caption: c.caption } : {}),
     // Only carry hesitation when it is actually notable. Emitting it for every
     // segment would add ~600 tokens to a 30-min digest to say "normal" 70 times.
-    ...(c.markers && c.markers.hesitation >= notable && c.markers.hesitation > 0
+    ...(c.markers && c.markers.hesitation > notable && c.markers.hesitation > 0
       ? { hesitation: c.markers.hesitation }
       : {}),
   }));

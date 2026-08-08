@@ -40,10 +40,41 @@ export interface NarrativePlan {
 }
 
 const PREVIEW_WORDS = 60;
-/** A topic shorter than this isn't a subject, it's a beat. */
-const MIN_TOPIC_SEC = 90;
-/** Few enough that one reply can carry a verdict for every one of them. */
-const MAX_TOPICS = 14;
+
+/**
+ * How many topics a video of this length should have.
+ *
+ * A fixed minimum size was the wrong shape: at 90s it collapsed anything under
+ * ~3 minutes to a single topic, which silently disabled the narrative planner
+ * for short clips entirely. What actually matters is the COUNT — enough topics
+ * to plan with, few enough that one model reply can carry a verdict for each.
+ * Aim for that count and derive the size from it, so a 90-second clip and a
+ * 90-minute lecture both get a usable topic map.
+ */
+function topicPlanFor(durationSec: number): { target: number; minSec: number } {
+  const target = Math.max(3, Math.min(14, Math.round(durationSec / 150)));
+  // Allow topics to be about half the even split, so cohesion still decides
+  // where the boundaries fall rather than the arithmetic forcing them.
+  const minSec = Math.max(20, durationSec / (target * 2));
+  return { target, minSec };
+}
+
+/**
+ * Assembly caps, scaled to how many topics there are.
+ *
+ * With 11 topics, reserving 20% each for the opening and closing beats and
+ * capping any one topic at 35% leaves room to spread. With 3 topics the same
+ * constants under-fill the budget — the arc alone would be capped below what
+ * three topics need. Both derive from the count; the divisors are chosen so an
+ * 11-topic video keeps exactly the behaviour verified on real footage.
+ */
+function capsFor(topicCount: number): { arcCap: number; maxShare: number } {
+  const n = Math.max(1, topicCount);
+  return {
+    arcCap: Math.max(0.15, Math.min(0.45, 2.2 / n)),
+    maxShare: Math.max(0.3, Math.min(0.7, 3.8 / n)),
+  };
+}
 
 /** Group candidates into topics using the same cohesion shifts as segmentation. */
 export function buildTopics(analysis: Analysis, candidates: Candidate[]): Topic[] {
@@ -69,16 +100,29 @@ export function buildTopics(analysis: Analysis, candidates: Candidate[]): Topic[
   // for the model to return a verdict for each (it answered for 6 of 38, so
   // most of the video ended up unjudged). Merge the shortest neighbour until
   // topics are substantial and few enough to judge in one bounded reply.
+  const { target, minSec } = topicPlanFor(analysis.durationSec);
   const dur = (g: Candidate[]) => g[g.length - 1]!.end - g[0]!.start;
   while (groups.length > 1) {
     const shortest = groups.reduce((best, g, i) => (dur(g) < dur(groups[best]!) ? i : best), 0);
-    if (dur(groups[shortest]!) >= MIN_TOPIC_SEC && groups.length <= MAX_TOPICS) break;
+    if (dur(groups[shortest]!) >= minSec && groups.length <= target) break;
     // Fold into whichever neighbour is shorter, so topics stay balanced.
     const prev = shortest > 0 ? groups[shortest - 1] : null;
     const next = shortest < groups.length - 1 ? groups[shortest + 1] : null;
     const into = !prev ? shortest + 1 : !next ? shortest - 1 : dur(prev) <= dur(next) ? shortest - 1 : shortest + 1;
     const merged = into < shortest ? [...groups[into]!, ...groups[shortest]!] : [...groups[shortest]!, ...groups[into]!];
     groups.splice(Math.min(into, shortest), 2, merged);
+  }
+
+  // Cohesion can only merge groups down; it can never split one up. When the
+  // vocabulary barely shifts — a short clip, a repetitive walkthrough — it
+  // yields a single group no matter how many candidates there are, which
+  // silently disables the narrative planner. Fall back to an even structural
+  // division so there is always a usable map to plan against.
+  if (groups.length < 2 && candidates.length >= 2) {
+    const parts = Math.max(2, Math.min(target, candidates.length));
+    const per = Math.ceil(candidates.length / parts);
+    groups.length = 0;
+    for (let i = 0; i < candidates.length; i += per) groups.push(candidates.slice(i, i + per));
   }
 
   return groups.map((g, i) => {
@@ -115,20 +159,21 @@ export function assembleNarrative(
   candidates: Candidate[],
   budgetSec: number,
   opts: { maxTopicShare?: number } = {},
-): { keep: string[]; reasons: Map<string, string> } {
+): { keep: string[]; reasons: Map<string, string>; arc: string[] } {
   const byId = new Map(candidates.map((c) => [c.id, c]));
+  const caps = capsFor(topics.length);
   const len = (id: string) => {
     const c = byId.get(id);
     return c ? c.end - c.start : 0;
   };
   const reasons = new Map<string, string>();
-  const maxShare = opts.maxTopicShare ?? 0.35;
+  const maxShare = opts.maxTopicShare ?? caps.maxShare;
 
   const scored = topics
     .map((t) => ({ t, v: verdicts.get(t.id) }))
     .filter((x): x is { t: Topic; v: TopicVerdict } => !!x.v)
     .sort((a, b) => b.v.relevance - a.v.relevance);
-  if (!scored.length) return { keep: [], reasons };
+  if (!scored.length) return { keep: [], reasons, arc: [] };
 
   // Reserve the arc first, so a strong middle can't crowd out the beats that
   // make the result feel like a piece rather than a clip.
@@ -140,7 +185,7 @@ export function assembleNarrative(
 
   const keep: string[] = [];
   let spent = 0;
-  const takeFrom = (x: { t: Topic; v: TopicVerdict }, cap: number): void => {
+  const takeFrom = (x: { t: Topic; v: TopicVerdict }, cap: number): number => {
     // Inside a topic, prefer the densest speech — that is where the point is.
     const ordered = [...x.t.candidateIds].sort((a, b) => {
       const ca = byId.get(a);
@@ -157,11 +202,39 @@ export function assembleNarrative(
       spent += d;
       reasons.set(id, `${x.v.label} — ${x.v.why}`);
     }
+    return usedHere;
   };
 
-  const arcCap = budgetSec * 0.2;
-  takeFrom(opening, arcCap);
-  if (closing && closing.t.id !== opening.t.id) takeFrom(closing, arcCap);
+  /**
+   * Land at least one segment from a topic, ignoring the per-topic cap.
+   *
+   * The arc reservation is only meaningful if it actually lands. When segments
+   * are long relative to the budget, the cap can block the opening or closing
+   * topic entirely — and a cut with no closing beat ends wherever the budget
+   * ran out, which is the exact failure the reservation exists to prevent.
+   * Takes the shortest candidate so the guarantee costs as little as possible.
+   */
+  const takeOne = (x: { t: Topic; v: TopicVerdict }): void => {
+    const ordered = x.t.candidateIds.filter((id) => !keep.includes(id)).sort((a, b) => len(a) - len(b));
+    for (const id of ordered) {
+      const d = len(id);
+      if (d > 0 && spent + d <= budgetSec) {
+        keep.push(id);
+        spent += d;
+        reasons.set(id, `${x.v.label} — ${x.v.why}`);
+        return;
+      }
+    }
+  };
+
+  const arcCap = budgetSec * caps.arcCap;
+  if (takeFrom(opening, arcCap) === 0) takeOne(opening);
+  if (closing && closing.t.id !== opening.t.id) {
+    if (takeFrom(closing, arcCap) === 0) takeOne(closing);
+  }
+  // Everything taken so far IS the arc — record it so a later trim can't
+  // quietly undo the reservation.
+  const arc = [...keep];
 
   // Then fill by relevance, capped per topic so coverage stays broad.
   for (const x of scored) {
@@ -174,5 +247,5 @@ export function assembleNarrative(
   // Keep chronological order for the EDL; the ending is whatever the closing
   // topic contributed, which is the point of reserving it.
   keep.sort((a, b) => (byId.get(a)?.start ?? 0) - (byId.get(b)?.start ?? 0));
-  return { keep, reasons };
+  return { keep, reasons, arc };
 }
