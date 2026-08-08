@@ -3,6 +3,7 @@ import { buildDigest } from './digest.js';
 import { initialEdl, outputDuration } from './edl.js';
 import { History } from './history.js';
 import { canonicalizeId, canonicalizeOps } from './ids.js';
+import { shouldAct, type Intent } from './intent.js';
 import { assembleNarrative, buildTopics, type Topic, type TopicVerdict } from './narrative.js';
 import { HeuristicBackend } from './intelligence/heuristic.js';
 import type { Backend, HistoryEntry } from './intelligence/index.js';
@@ -34,9 +35,12 @@ export type ChatOutcome =
   | { kind: 'answer'; ok: true; text: string };
 
 /**
- * Parse "make the total under 5 minutes"-style instructions. Duration targets
- * need arithmetic over every segment — an LLM can't do that reliably, so these
- * route to the deterministic planner (which uses the LLM only for ranking).
+ * Extract a duration from text.
+ *
+ * NOT used for routing — the model reports the target directly as part of the
+ * intent. Kept only as a deterministic helper for the no-model heuristic
+ * backend. Do not reintroduce it as an intent test: deciding whether the user
+ * asked for a length is semantics, and keyword rules got that wrong.
  */
 export function parseTargetDuration(message: string): { targetSec: number; fastSpeed: number } | null {
   const t = message.toLowerCase();
@@ -51,52 +55,7 @@ export function parseTargetDuration(message: string): { targetSec: number; fastS
   return null;
 }
 
-const ACTION_VERB =
-  /^(speed|slow|cut|remove|delete|drop|add|insert|make|set|label|caption|overlay|mute|keep|retime|split|merge|reorder|change|put|apply|classify|mark|trim|shorten|lengthen|extend|undo|redo)\b/;
-const QUESTION_WORD =
-  /^(what|what's|who|whose|why|how|when|where|which|is|are|was|were|does|do|did|tell me|explain|describe|summarize|summarise|give me a summary|list)\b/;
 
-/**
- * Is this message a question about the video rather than an edit instruction?
- * "can you speed up the intro?" must edit; "what are the key highlights?" must
- * answer — so strip polite/aux prefixes, then let action verbs beat question
- * words, and question words / trailing "?" mark the rest as questions.
- */
-/**
- * Does a duration request mean REMOVE the rest, or just speed it up?
- *
- * Only explicit removal language counts. Bare "cut it to 5 minutes" is left as
- * compress: in editing, "a 5-minute cut" just names the deliverable, and
- * silently deleting footage on an ambiguous verb is the kind of surprise this
- * agent is supposed to avoid.
- */
-export function wantsRemoval(message: string): boolean {
-  return /\b(cut out|cut away|remove|delete|drop|get rid of|lose)\b|\b(only|just)\s+(keep|the)\b|\bhighlights?\s+only\b|\bnothing but\b/i.test(
-    message,
-  );
-}
-
-/** Verbs that introduce a request which may be for information OR an edit. */
-const ASK_VERB = /^(give|show|list|name|walk me|break (it|this) down)\b/;
-/** Things you can only ASK for — you cannot "edit" a reason into existence. */
-const INFO_OBJECT =
-  /\b(reasons?|rationale|justifications?|points?|facts?|examples?|details?|takeaways?|topics?|breakdown|overview|summary|thoughts?|opinion)\b/;
-
-export function isQuestion(message: string): boolean {
-  const t = message
-    .trim()
-    .toLowerCase()
-    .replace(/^(can|could|would|will) you (please )?/, '')
-    .replace(/^please /, '');
-  if (ACTION_VERB.test(t)) return false;
-  if (QUESTION_WORD.test(t)) return true;
-  // "give me the reasons" / "show me the key points" ask for information, but
-  // "give me a 5 minute cut" is an edit — same verb, opposite intent. Require
-  // an informational object AND no duration target. Without this, asking the
-  // agent to explain itself silently applied an edit to the user's timeline.
-  if (ASK_VERB.test(t) && INFO_OBJECT.test(t) && !parseTargetDuration(message)) return true;
-  return t.endsWith('?');
-}
 
 /**
  * A live editing session over one imported file. Holds the immutable analysis
@@ -178,79 +137,112 @@ export class Session {
     return out;
   }
 
+  /**
+   * Ask a model what the user meant.
+   *
+   * If neither the selected backend nor the fallback can classify — no model
+   * loaded at all — we do NOT drop back to keyword rules. That is what caused
+   * questions to silently edit the timeline. With no semantics available the
+   * honest answer is to ask the user, which is also a legible prompt to start
+   * Ollama or pick a backend.
+   */
+  private async readIntent(backend: Backend, message: string, fallback?: Backend): Promise<Intent> {
+    const pendingProposal = this.pending
+      ? `The agent offered three options for hitting a ${Math.round(this.pending.targetSec)}s target: ` +
+        `(1) compress harder, (2) cut the least important segments, (3) accept a longer result.`
+      : undefined;
+    const opts = { conversation: this.chatLog.slice(-4), pendingProposal };
+    for (const b of [backend, fallback]) {
+      if (!b?.classifyIntent) continue;
+      try {
+        return await b.classifyIntent(message, opts);
+      } catch {
+        /* try the next backend */
+      }
+    }
+    return {
+      kind: 'unclear',
+      question:
+        'I need a language model to understand that reliably, and none is responding. ' +
+        'Start Ollama (or pick a backend in the Intelligence panel) — or tell me plainly, ' +
+        'e.g. "answer: what is this about" or "edit: speed up the quiet parts".',
+    };
+  }
+
   private async routeChat(backend: Backend, message: string, fallback?: Backend, onToken?: (t: string) => void): Promise<ChatOutcome> {
-    const t = message.trim().toLowerCase();
     const fmtD = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
-    // --- chat commands -----------------------------------------------------
-    if (/^undo\b/.test(t)) {
-      const l = this.undo();
-      this.agentPlan = null;
-      return { kind: 'edit', ok: true, interpretation: l ? `Undone: "${l}".` : 'Nothing to undo.', edl: this.edl, usedFallback: false };
+    // What did they mean? A model decides — never keyword rules. Routing by
+    // pattern failed on every phrasing nobody thought to enumerate, and a
+    // misroute silently mutated the EDL. If no backend can classify, we ASK
+    // rather than guess.
+    const intent = await this.readIntent(backend, message, fallback);
+
+    // Not confident, or confident but destructive and ambiguous → put it back
+    // to the user. Asking costs a second; a wrong guess costs their edit.
+    if (!shouldAct(intent)) {
+      const q =
+        intent.kind === 'unclear'
+          ? intent.question
+          : 'I want to make sure before I change anything — what would you like me to do?';
+      return { kind: 'answer', ok: true, text: q };
     }
-    if (/^redo\b/.test(t)) {
+
+    if (intent.kind === 'command') {
+      if (intent.command === 'undo') {
+        const l = this.undo();
+        this.agentPlan = null;
+        return { kind: 'edit', ok: true, interpretation: l ? `Undone: "${l}".` : 'Nothing to undo.', edl: this.edl, usedFallback: false };
+      }
       const l = this.redo();
       return { kind: 'edit', ok: true, interpretation: l ? `Redone: "${l}".` : 'Nothing to redo.', edl: this.edl, usedFallback: false };
     }
 
-    // --- pending proposal: resolve the user's choice first -----------------
-    if (this.pending) {
+    // --- pending proposal: the user is answering a question we asked -------
+    if (this.pending && intent.kind === 'confirm') {
       const p = this.pending;
-      const pickSpeed = t.match(/(\d+(?:\.\d+)?)\s*x\b/);
-      const neededSpeed = Math.ceil(p.totalSec / p.targetSec);
-      if (/^(no|cancel|never ?mind|leave it|stop)\b/.test(t)) {
-        this.pending = null;
-        return { kind: 'answer', ok: true, text: 'Okay, cancelled — nothing was changed.' };
-      }
-      if (/^1\b/.test(t) || pickSpeed || /harder|faster speed|higher/.test(t)) {
-        this.pending = null;
-        const speed = pickSpeed ? Number(pickSpeed[1]) : neededSpeed;
-        return this.runTargetPlan(backend, p.targetSec, speed, 'compress');
-      }
-      if (/^2\b/.test(t) || /\bcut\b|remove|drop/.test(t)) {
-        this.pending = null;
-        return this.runTargetPlan(backend, p.targetSec, p.fastSpeed, 'cut');
-      }
-      if (/^3\b/.test(t) || /^(yes|y|ok|okay|accept|apply|go ahead|do it)\b/.test(t)) {
-        this.pending = null;
-        return this.runTargetPlan(backend, p.minSec + 1, p.fastSpeed, 'compress');
-      }
-      // Anything else: drop the proposal and treat it as a new message.
       this.pending = null;
+      const neededSpeed = Math.ceil(p.totalSec / p.targetSec);
+      switch (intent.choice) {
+        case 'cancel':
+          return { kind: 'answer', ok: true, text: 'Okay, cancelled — nothing was changed.' };
+        case 'first':
+          return this.runTargetPlan(backend, p.targetSec, neededSpeed, 'compress');
+        case 'second':
+          return this.runTargetPlan(backend, p.targetSec, p.fastSpeed, 'cut');
+        default:
+          return this.runTargetPlan(backend, p.minSec + 1, p.fastSpeed, 'compress');
+      }
     }
+    // They said something else entirely — drop the proposal, carry on.
+    if (this.pending) this.pending = null;
 
-    // --- questions → Q&A with conversation + action context ----------------
-    if (isQuestion(message)) {
+    if (intent.kind === 'question') {
       const text = await this.answer(backend, message, onToken);
       return { kind: 'answer', ok: true, text };
     }
 
     // --- duration targets → feasibility check, then plan or ask ------------
-    const target = parseTargetDuration(message);
-    if (target) {
+    if (intent.kind === 'duration') {
       const totalSec = this.candidates.reduce((a, c) => a + (c.end - c.start), 0);
-      const minSec = totalSec / target.fastSpeed;
-      if (target.targetSec < minSec) {
-        this.pending = { targetSec: target.targetSec, fastSpeed: target.fastSpeed, totalSec, minSec };
-        const needed = Math.ceil(totalSec / target.targetSec);
+      const minSec = totalSec / intent.fastSpeed;
+      if (intent.targetSec < minSec) {
+        this.pending = { targetSec: intent.targetSec, fastSpeed: intent.fastSpeed, totalSec, minSec };
+        const needed = Math.ceil(totalSec / intent.targetSec);
         return {
           kind: 'answer',
           ok: true,
           text:
             `That target isn't reachable as asked: the source is ${fmtD(totalSec)}, so even with ` +
-            `EVERYTHING at ${target.fastSpeed}× the result is ${fmtD(minSec)} — above your ${fmtD(target.targetSec)} target.\n\n` +
+            `EVERYTHING at ${intent.fastSpeed}× the result is ${fmtD(minSec)} — above your ${fmtD(intent.targetSec)} target.\n\n` +
             `Options:\n` +
             `1. Compress harder — about ${needed}× would fit (keeps everything, just faster)\n` +
             `2. Cut the least important segments entirely and keep the best at 1× (undoable)\n` +
-            `3. Accept ${fmtD(minSec)} — apply everything at ${target.fastSpeed}×\n\n` +
+            `3. Accept ${fmtD(minSec)} — apply everything at ${intent.fastSpeed}×\n\n` +
             `Reply 1, 2, or 3 (or e.g. "use ${needed}x"). I won't change anything until you choose.`,
         };
       }
-      // "make it under 5 min" speeds the rest up; "cut it to 5 min" / "only keep
-      // the highlights" should REMOVE it. Without this, cut mode was reachable
-      // only when a target was infeasible, so a clean highlight reel at a
-      // feasible length was impossible to ask for.
-      return this.runTargetPlan(backend, target.targetSec, target.fastSpeed, wantsRemoval(message) ? 'cut' : 'compress');
+      return this.runTargetPlan(backend, intent.targetSec, intent.fastSpeed, intent.removal ? 'cut' : 'compress');
     }
 
     // --- free-form edits via the op DSL ------------------------------------

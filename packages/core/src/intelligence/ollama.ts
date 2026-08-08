@@ -1,4 +1,5 @@
 import type { Digest, Patch, VideoHighlights, VideoSummary } from '../types.js';
+import { INTENT_SYSTEM, buildIntentPrompt, parseIntent } from '../intent.js';
 import type { AnswerContext, Backend, PlanContext } from './index.js';
 import {
   ANSWER_SYSTEM,
@@ -168,6 +169,12 @@ export class OllamaBackend implements Backend {
         clearTimeout(timer);
       }
     });
+  }
+
+  async classifyIntent(message: string, opts: Parameters<NonNullable<Backend['classifyIntent']>>[1] = {}) {
+    // Deliberately a tiny prompt — no digest. Routing must stay sub-second so
+    // it costs nothing to put every message through it.
+    return parseIntent(await this.chat(INTENT_SYSTEM, buildIntentPrompt(message, opts)));
   }
 
   async plan(ctx: PlanContext): Promise<Patch> {

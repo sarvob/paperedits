@@ -9,8 +9,6 @@ import {
   planRender,
   segment,
   validateOps,
-  wantsRemoval,
-  isQuestion,
   buildTopics,
   assembleNarrative,
   speechMarkers,
@@ -273,15 +271,6 @@ describe('duration targets are a promise, not an estimate', () => {
   });
 });
 
-describe('removal intent vs speed-up intent', () => {
-  it('only treats explicit removal language as a cut', () => {
-    expect(wantsRemoval('make it under 5 minutes')).toBe(false);
-    expect(wantsRemoval('cut it to 5 minutes')).toBe(false); // names the deliverable
-    expect(wantsRemoval('remove the rest, under 5 minutes')).toBe(true);
-    expect(wantsRemoval('only keep the highlights, under 5 min')).toBe(true);
-    expect(wantsRemoval('get rid of everything else, 4 minutes')).toBe(true);
-  });
-});
 
 describe('transitions', () => {
   it('never fades a boundary touching a sped-up segment (no strobing)', async () => {
@@ -458,31 +447,6 @@ describe('prompt cache ordering', () => {
   });
 });
 
-describe('chat routing: asking for an explanation must never edit', () => {
-  it('routes information requests to Q&A and edit requests to the edit path', () => {
-    // Asking the agent to justify itself previously applied a classify op to
-    // the user's EDL — same verb ("give me"), opposite intent.
-    for (const q of [
-      'give me reasons for each selection',
-      'show me the key points',
-      'give me a breakdown',
-      'list the main topics',
-      'tell me atleast 5 interesting points',
-      'walk me through the rationale',
-    ]) {
-      expect(isQuestion(q), q).toBe(true);
-    }
-    for (const e of [
-      'give me a 5 minute cut',
-      'show me at 2x',
-      'cut the silences',
-      'make it under 3 minutes',
-      'speed up the boring parts',
-    ]) {
-      expect(isQuestion(e), e).toBe(false);
-    }
-  });
-});
 
 describe('paralinguistic markers', () => {
   const w = (text: string, start: number, end: number) => ({ text, start, end });
@@ -573,5 +537,56 @@ describe('adapts to the video, not to one video', () => {
     }));
     const d = buildDigest('h', 100, flat as never);
     expect(d.entries.filter((e) => e.hesitation != null).length).toBeLessThan(d.entries.length);
+  });
+});
+
+describe('routing is semantic, and never guesses when it matters', () => {
+  const backendReturning = (intent: unknown) => ({
+    name: 'stub', network: false,
+    async plan() { return { instruction: '', ops: [], interpretation: '' }; },
+    async classifyIntent() { return intent as never; },
+  });
+
+  it('does not touch the EDL when intent is unclear', async () => {
+    const session = new Session(makeAnalysis());
+    const before = JSON.stringify(session.edl);
+    const res = await session.chat(
+      backendReturning({ kind: 'unclear', question: 'Did you want to ask about the video, or change it?' }) as never,
+      'so whag is this video about',
+    );
+    expect(res.kind).toBe('answer');
+    if (res.kind === 'answer') expect(res.text).toMatch(/ask about the video/);
+    expect(JSON.stringify(session.edl)).toBe(before);
+  });
+
+  it('refuses to act on a low-confidence destructive intent', async () => {
+    const session = new Session(makeAnalysis());
+    const before = JSON.stringify(session.edl);
+    // Confident enough for a reversible edit, NOT for deleting footage.
+    const res = await session.chat(
+      backendReturning({ kind: 'duration', targetSec: 60, fastSpeed: 10, removal: true, confidence: 0.7 }) as never,
+      'trim it down',
+    );
+    expect(res.kind).toBe('answer'); // asked, did not cut
+    expect(JSON.stringify(session.edl)).toBe(before);
+  });
+
+  it('acts on the same confidence when nothing can be destroyed', async () => {
+    const session = new Session(makeAnalysis());
+    const res = await session.chat(
+      backendReturning({ kind: 'command', command: 'undo', confidence: 0.7 }) as never,
+      'take that back',
+    );
+    expect(res.kind).toBe('edit');
+  });
+
+  it('asks instead of pattern-matching when no model can classify', async () => {
+    const session = new Session(makeAnalysis());
+    const before = JSON.stringify(session.edl);
+    const noIntent = { name: 'x', network: false, async plan() { return { instruction: '', ops: [], interpretation: '' }; } };
+    const res = await session.chat(noIntent as never, 'so what is this video about');
+    expect(res.kind).toBe('answer');
+    if (res.kind === 'answer') expect(res.text).toMatch(/language model/i);
+    expect(JSON.stringify(session.edl)).toBe(before);
   });
 });

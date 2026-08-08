@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { Digest, Patch, VideoHighlights, VideoSummary } from '../types.js';
 import type { AnswerContext, Backend, PlanContext } from './index.js';
 import type { OutboundGate } from './remote.js';
+import { INTENT_SYSTEM, buildIntentPrompt, parseIntent } from '../intent.js';
 import {
   ANSWER_SYSTEM,
   buildAnswerPrompt,
@@ -58,6 +59,12 @@ export class AnthropicBackend implements Backend {
     if (response.stop_reason === 'refusal') throw new Error('model declined the request');
     const block = response.content.find((b) => b.type === 'text');
     return block && block.type === 'text' ? block.text : '';
+  }
+
+  async classifyIntent(message: string, opts: Parameters<NonNullable<Backend['classifyIntent']>>[1] = {}) {
+    const prompt = buildIntentPrompt(message, opts);
+    if (!(await this.gate(prompt))) throw new Error('send cancelled by user');
+    return parseIntent(await this.ask(INTENT_SYSTEM, prompt, 200));
   }
 
   async plan(ctx: PlanContext): Promise<Patch> {

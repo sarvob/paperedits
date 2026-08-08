@@ -34,6 +34,15 @@ export interface Backend {
   plan(ctx: PlanContext): Promise<Patch>;
   /** overview + per-moment one-liners from the digest (optional per backend) */
   summarize?(digest: Digest): Promise<VideoSummary>;
+  /**
+   * Decide what the user meant. This is the routing decision — it used to be
+   * regex over the message, which silently applied edits when someone asked a
+   * question. Semantics belong to a model.
+   */
+  classifyIntent?(
+    message: string,
+    opts?: { conversation?: { role: 'user' | 'assistant'; text: string }[]; pendingProposal?: string },
+  ): Promise<import('../intent.js').Intent>;
   /** answer a question about the video (chat, not an edit) */
   answer?(ctx: AnswerContext): Promise<string>;
   /** same, but emits tokens as they arrive so the UI can render progressively */
